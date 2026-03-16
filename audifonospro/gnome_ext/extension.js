@@ -1,21 +1,20 @@
 /**
  * audioPro — GNOME Shell Quick Settings Extension
  *
- * Estructura FINAL:
+ * Layout final:
+ *   [🎧] ────────────────── 80%  >    ← volumen master (GNOME, sin tocar)
+ *   [🌞] ────────────────── 60%       ← brillo (GNOME, sin tocar)
+ *   [●] Spotify  ──────────  72%      ← stream row (esta extensión, colSpan=2)
+ *   [●] Firefox  ──────────  45%      ← stream row
+ *        └→ clic icono = menú de sinks (JBL / Bocina / ...)
+ *   [WiFi] [BT] [Power] ...           ← tiles nativos
+ *   [🎧 audioPro  >]                  ← tile detalles: batería + EQ
  *
- *  [🎧 volumen master ]  ──────────────────────  >    ← GNOME nativo (sin tocar)
- *  [🌞 brillo         ]  ──────────────────────        ← GNOME nativo (sin tocar)
- *  [ spotify-icon ] Spotify  ─────────────────  72%   ← NUEVO: stream slider
- *  [ app-icon    ] Firefox   ─────────────────  45%   ← NUEVO: stream slider
- *    └→ clic en icono = menú de sinks (JBL / bocina / TV...)
- *  ┌────────────────────────────────────────────────┐
- *  │  Wi-Fi  BT  Power  Night  Dark  DND  ...      │  ← tiles nativos
- *  └────────────────────────────────────────────────┘
- *  [🎧 audioPro    >]   ← tile: batería, codec, EQ, abrir app
- *
- * Señales Gvc verificadas en Gvc-1.0.gir de este sistema:
- *   state-changed, stream-added, stream-removed  ✓
- *   (sink-input-added NO existe en este Gvc — se filtra con instanceof)
+ * FIX vs versión anterior:
+ *   ❌ _grid.addItem → falla silenciosamente (QuickSettingsItem fuera del flujo)
+ *   ❌ instanceof Gvc.MixerSinkInput → en GJS lookup_stream_id retorna MixerStream base
+ *   ✅ addExternalIndicator con container único que maneja filas internamente
+ *   ✅ filtro por get_sink_inputs().some(si => si.id === id) en vez de instanceof
  */
 
 import GObject from 'gi://GObject';
@@ -29,6 +28,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 
 const STATUS_FILE = `${GLib.get_home_dir()}/.cache/audifonospro/status.json`;
 const EQ_FILE     = `${GLib.get_home_dir()}/.config/audifonospro/eq_preset`;
@@ -42,27 +42,28 @@ const EQ_PRESETS = [
     ['treble', 'Agudos +'],
 ];
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// AppStreamItem — una fila por app activa (aspecto idéntico al slider de volumen)
-// ═══════════════════════════════════════════════════════════════════════════════
-const AppStreamItem = GObject.registerClass(
-class AppStreamItem extends QuickSettings.QuickSettingsItem {
-    _init(stream, mixer) {
-        super._init({ style_class: 'quick-slider', reactive: true });
+// ─────────────────────────────────────────────────────────────────────────────
+// StreamRow: un widget por app activa (NO es QuickSettingsItem, es St.BoxLayout)
+// ─────────────────────────────────────────────────────────────────────────────
+class StreamRow {
+    constructor(stream, mixer) {
+        this.id        = stream.id;
+        this._stream   = stream;
+        this._mixer    = mixer;
+        this._volMax   = mixer.get_vol_max_norm();
+        this._notifyId = 0;
+        this._sliderId = 0;
+        this._sinkMenu = null;
+        this._pressId  = 0;
 
-        this._stream     = stream;
-        this._mixer      = mixer;
-        this._volMax     = mixer.get_vol_max_norm();
-        this._notifyId   = 0;
-        this._sliderId   = 0;
-        this._sinkMenu   = null;
-        this._pressId    = 0;
+        // Contenedor con el mismo CSS que usa el slider nativo de GNOME
+        this.actor = new St.BoxLayout({
+            style_class: 'quick-slider-bin',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
 
-        // ── Layout idéntico al native quick-slider ──
-        const bin = new St.BoxLayout({ style_class: 'quick-slider-bin' });
-        this.child = bin;
-
-        // Icono de la app (clicable → menú de sinks)
+        // Icono (botón clicable → menú de sinks)
         this._iconBtn = new St.Button({
             style_class: 'icon-button flat',
             can_focus: true,
@@ -73,24 +74,25 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
             }),
         });
         this._iconBtn.connect('clicked', () => this._openSinkMenu());
-        bin.add_child(this._iconBtn);
+        this.actor.add_child(this._iconBtn);
 
         // Nombre de la app
-        const appName = (stream.description || stream.name || 'App').slice(0, 20);
-        bin.add_child(new St.Label({
-            text: appName,
+        const name = (stream.description || stream.name || 'App').slice(0, 20);
+        this.actor.add_child(new St.Label({
+            text: name,
             y_align: Clutter.ActorAlign.CENTER,
             style: 'min-width: 90px; padding-right: 6px; font-size: 0.85em;',
         }));
 
-        // Slider de volumen
-        this._slider = new St.Slider({ value: stream.volume / this._volMax, x_expand: true });
+        // Slider de volumen (Slider es de ui/slider.js, no de gi://St)
+        this._slider = new Slider(stream.volume / this._volMax);
+        this._slider.x_expand = true;
         this._sliderId = this._slider.connect('notify::value', () => {
             this._stream.volume = Math.round(this._slider.value * this._volMax);
             this._stream.push_volume();
             this._pct.text = `${Math.round(this._slider.value * 100)}%`;
         });
-        bin.add_child(this._slider);
+        this.actor.add_child(this._slider);
 
         // Porcentaje
         this._pct = new St.Label({
@@ -98,9 +100,9 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
             y_align: Clutter.ActorAlign.CENTER,
             style: 'min-width: 38px; text-align: right; font-size: 0.8em;',
         });
-        bin.add_child(this._pct);
+        this.actor.add_child(this._pct);
 
-        // Sincronizar cuando el volumen cambia desde afuera
+        // Sincronizar cuando el volumen cambia desde otra fuente
         this._notifyId = stream.connect('notify::volume', () => {
             const pct = stream.volume / this._volMax;
             if (Math.abs(this._slider.value - pct) > 0.01) {
@@ -110,10 +112,9 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
         });
     }
 
-    // ── Menú de selección de sink ────────────────────────────────────────────
+    // ── Menú de selección de sink ──────────────────────────────────────────
     _openSinkMenu() {
-        this._closeSinkMenu(); // cerrar si ya estaba abierto
-
+        this._closeSinkMenu();
         const sinks = this._mixer.get_sinks();
         if (!sinks?.length) return;
 
@@ -138,8 +139,12 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
         // Cerrar al hacer click fuera del menú
         this._pressId = global.stage.connect('button-press-event', (_stage, event) => {
             const src = event.get_source();
-            if (!this._sinkMenu?.actor.contains(src))
-                this._closeSinkMenu();
+            let actor = src;
+            while (actor) {
+                if (actor === this._sinkMenu?.actor) return;
+                actor = actor.get_parent?.();
+            }
+            this._closeSinkMenu();
         });
 
         this._sinkMenu.open(true);
@@ -151,7 +156,6 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
             this._pressId = 0;
         }
         if (this._sinkMenu) {
-            this._sinkMenu.close(false);
             this._sinkMenu.destroy();
             this._sinkMenu = null;
         }
@@ -159,15 +163,113 @@ class AppStreamItem extends QuickSettings.QuickSettingsItem {
 
     destroy() {
         this._closeSinkMenu();
-        if (this._notifyId) { this._stream?.disconnect(this._notifyId); this._notifyId = 0; }
-        if (this._sliderId) { this._slider?.disconnect(this._sliderId); this._sliderId = 0; }
+        if (this._notifyId && this._stream) {
+            try { this._stream.disconnect(this._notifyId); } catch (_) {}
+            this._notifyId = 0;
+        }
+        if (this._sliderId && this._slider) {
+            try { this._slider.disconnect(this._sliderId); } catch (_) {}
+            this._sliderId = 0;
+        }
+        this.actor.destroy();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StreamsContainer: QuickSettingsItem que contiene todas las filas de streams
+// Registrado via addExternalIndicator(indicator, 2) → colSpan=2 = ancho completo
+// ─────────────────────────────────────────────────────────────────────────────
+const StreamsContainer = GObject.registerClass(
+class StreamsContainer extends QuickSettings.QuickSettingsItem {
+    _init() {
+        super._init({
+            style_class: '',   // sin fondo de tile
+            reactive: false,
+            can_focus: false,
+        });
+
+        this._vbox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style: 'spacing: 0px;',
+        });
+        this.child = this._vbox;
+        this.hide();  // oculto hasta que aparezca el primer stream
+    }
+
+    addRow(row) {
+        this._vbox.add_child(row.actor);
+        this.show();
+    }
+
+    removeRow(row) {
+        try { this._vbox.remove_child(row.actor); } catch (_) {}
+        if (!this._vbox.get_first_child()) this.hide();
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StreamsIndicator: SystemIndicator que expone el container al panel
+// ─────────────────────────────────────────────────────────────────────────────
+const StreamsIndicator = GObject.registerClass(
+class StreamsIndicator extends QuickSettings.SystemIndicator {
+    _init() {
+        super._init();
+        this._rows = new Map();  // streamId → StreamRow
+        this._container = new StreamsContainer();
+        this.quickSettingsItems.push(this._container);
+    }
+
+    loadAll(mixer) {
+        try {
+            for (const s of mixer.get_sink_inputs())
+                this._addIfNew(s, mixer);
+        } catch (_) {}
+    }
+
+    tryAdd(id, mixer) {
+        try {
+            // Verificar que es un sink input (app de audio) y no un sink de hardware
+            // Usamos get_sink_inputs() en vez de instanceof para evitar problemas de tipos GJS
+            const inputs = mixer.get_sink_inputs();
+            const isSinkInput = inputs.some(si => si.id === id);
+            if (!isSinkInput) return;
+
+            const s = mixer.lookup_stream_id(id);
+            if (s) this._addIfNew(s, mixer);
+        } catch (_) {}
+    }
+
+    _addIfNew(stream, mixer) {
+        if (!stream || this._rows.has(stream.id)) return;
+        if ((stream.name || '').includes('audiopro-qs')) return;
+        const row = new StreamRow(stream, mixer);
+        this._container.addRow(row);
+        this._rows.set(stream.id, row);
+    }
+
+    removeStream(id) {
+        const row = this._rows.get(id);
+        if (!row) return;
+        this._rows.delete(id);
+        this._container.removeRow(row);
+        row.destroy();
+    }
+
+    destroy() {
+        for (const row of this._rows.values()) {
+            this._container.removeRow(row);
+            row.destroy();
+        }
+        this._rows.clear();
+        this.quickSettingsItems.forEach(i => i.destroy());
         super.destroy();
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// AudioProToggle — tile para batería de dispositivos + EQ
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// AudioProToggle: tile para detalles de dispositivos + EQ
+// ─────────────────────────────────────────────────────────────────────────────
 const AudioProToggle = GObject.registerClass(
 class AudioProToggle extends QuickSettings.QuickMenuToggle {
     _init() {
@@ -176,10 +278,8 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
             subtitle: 'Control de audio',
             iconName: 'audio-headphones-symbolic',
         });
-
         this._deviceItems = [];
         this._deviceTimer = null;
-
         this._buildMenu();
         this._scheduleDeviceRefresh();
         this.connect('destroy', () => this._cleanup());
@@ -188,7 +288,6 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
     _buildMenu() {
         this.menu.setHeader('audio-headphones-symbolic', 'audioPro', 'Control de audio');
 
-        // Dispositivos
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem('Dispositivos'));
         this._deviceSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._deviceSection);
@@ -197,7 +296,6 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
         });
         this._deviceSection.addMenuItem(this._noDevicesItem);
 
-        // Ecualizador
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem('Ecualizador'));
         this._eqSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._eqSection);
@@ -210,7 +308,6 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
         }
         this._eqItems['flat'].setOrnament(PopupMenu.Ornament.DOT);
 
-        // Abrir app
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const openItem = new PopupMenu.PopupMenuItem('Abrir audioPro →');
         openItem.connect('activate', () => {
@@ -228,7 +325,6 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _refreshDevices() {
-        // Prioridad 1: status.json del daemon
         try {
             const [ok, bytes] = GLib.file_get_contents(STATUS_FILE);
             if (ok) {
@@ -244,7 +340,6 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
             }
         } catch (_) {}
 
-        // Fallback: pactl list cards
         try {
             const proc = Gio.Subprocess.new(
                 ['pactl', '--format=json', 'list', 'cards'],
@@ -284,7 +379,10 @@ class AudioProToggle extends QuickSettings.QuickMenuToggle {
 
     _applyEQ(id) {
         this._setEQOrnament(id);
-        try { GLib.mkdir_with_parents(CONFIG_DIR, 0o755); GLib.file_set_contents(EQ_FILE, id); } catch (_) {}
+        try {
+            GLib.mkdir_with_parents(CONFIG_DIR, 0o755);
+            GLib.file_set_contents(EQ_FILE, id);
+        } catch (_) {}
     }
 
     _setEQOrnament(id) {
@@ -307,110 +405,81 @@ class AudioProIndicator extends QuickSettings.SystemIndicator {
     destroy() { this.quickSettingsItems.forEach(i => i.destroy()); super.destroy(); }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Extension principal
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// Extension entry point
+// ─────────────────────────────────────────────────────────────────────────────
 export default class AudioProExtension extends Extension {
     enable() {
-        this._streamItems = new Map();  // streamId → AppStreamItem
-        this._mixer = null;
+        this._mixer   = null;
+        this._stateId = 0;
+        this._addedId = 0;
+        this._removedId = 0;
 
+        // 1. Indicator de streams (full-width, colSpan=2)
+        this._streamsIndicator = new StreamsIndicator();
+        Main.panel.statusArea.quickSettings.addExternalIndicator(
+            this._streamsIndicator, 2
+        );
+
+        // 2. Tile de audioPro (batería + EQ)
+        this._audioProIndicator = new AudioProIndicator();
+        Main.panel.statusArea.quickSettings.addExternalIndicator(
+            this._audioProIndicator
+        );
+
+        // 3. Gvc mixer para leer streams activos
         this._initMixer();
-
-        // Tile de dispositivos + EQ
-        this._indicator = new AudioProIndicator();
-        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
     }
 
     disable() {
-        // Destruir todos los stream items del grid
-        for (const item of this._streamItems.values())
-            item.destroy();
-        this._streamItems.clear();
-
-        // Destruir mixer
+        // Cleanup mixer
         if (this._mixer) {
             try {
-                this._mixer.disconnect(this._stateId);
-                this._mixer.disconnect(this._addedId);
-                this._mixer.disconnect(this._removedId);
+                if (this._stateId)   this._mixer.disconnect(this._stateId);
+                if (this._addedId)   this._mixer.disconnect(this._addedId);
+                if (this._removedId) this._mixer.disconnect(this._removedId);
                 this._mixer.close();
             } catch (_) {}
             this._mixer = null;
         }
 
-        // Destruir tile
-        this._indicator?.destroy();
-        this._indicator = null;
-    }
+        // Cleanup indicadores
+        this._streamsIndicator?.destroy();
+        this._streamsIndicator = null;
 
-    // ── Gvc ──────────────────────────────────────────────────────────────────
+        this._audioProIndicator?.destroy();
+        this._audioProIndicator = null;
+    }
 
     _initMixer() {
         this._mixer = new Gvc.MixerControl({ name: 'audiopro-qs' });
 
-        // state-changed: conexión PipeWire/PA lista
+        // state-changed: carga streams cuando la conexión a PipeWire está lista
         this._stateId = this._mixer.connect('state-changed', (_c, state) => {
             if (state === Gvc.MixerControlState.READY)
-                this._loadExistingStreams();
+                this._streamsIndicator.loadAll(this._mixer);
         });
 
-        // stream-added: cualquier stream nuevo (sink, sink-input, source…)
-        // Filtramos con instanceof para quedarnos SOLO con sink inputs (apps)
+        // stream-added: stream nuevo (hardware o app)
+        // tryAdd filtra: solo agrega si el id aparece en get_sink_inputs() (apps)
         this._addedId = this._mixer.connect('stream-added', (_c, id) => {
-            try {
-                const s = this._mixer.lookup_stream_id(id);
-                if (s instanceof Gvc.MixerSinkInput)
-                    this._addStream(s);
-            } catch (_) {}
+            this._streamsIndicator.tryAdd(id, this._mixer);
         });
 
-        // stream-removed: limpiar el item del grid
+        // stream-removed: app cerrada o silenciada
         this._removedId = this._mixer.connect('stream-removed', (_c, id) => {
-            this._removeStream(id);
+            this._streamsIndicator.removeStream(id);
         });
 
         this._mixer.open();
 
-        // Fallback: si ya estaba en READY antes de conectar las señales
+        // Fallback: el mixer puede estar en READY antes del tick del event loop
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            try { this._loadExistingStreams(); } catch (_) {}
+            try {
+                if (this._streamsIndicator && this._mixer)
+                    this._streamsIndicator.loadAll(this._mixer);
+            } catch (_) {}
             return GLib.SOURCE_REMOVE;
         });
-    }
-
-    _loadExistingStreams() {
-        if (!this._mixer) return;
-        try {
-            for (const s of this._mixer.get_sink_inputs())
-                this._addStream(s);
-        } catch (_) {}
-    }
-
-    _addStream(stream) {
-        if (!stream || this._streamItems.has(stream.id)) return;
-        // Ignorar nuestra propia conexión Gvc
-        if ((stream.name || '').includes('audiopro-qs')) return;
-
-        const item = new AppStreamItem(stream, this._mixer);
-
-        // Insertar en el grid de Quick Settings como fila completa (colSpan=2)
-        try {
-            Main.panel.statusArea.quickSettings._grid.addItem(item, 2);
-        } catch (_) {
-            // Si _grid no existe (API futura), usar addExternalIndicator no es posible aquí.
-            // Destruir y no mostrar antes que crashear GNOME.
-            item.destroy();
-            return;
-        }
-
-        this._streamItems.set(stream.id, item);
-    }
-
-    _removeStream(id) {
-        const item = this._streamItems.get(id);
-        if (!item) return;
-        item.destroy();
-        this._streamItems.delete(id);
     }
 }
