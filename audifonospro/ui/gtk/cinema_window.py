@@ -1,26 +1,43 @@
 """
-Ventana flotante de Cinema Mode.
+Ventana de Cinema Mode.
 
 Features:
   - Video embebido via gtk4paintablesink (GTK4/Wayland nativo)
-  - Barra de progreso con seek
-  - Soporte de subtítulos (.srt/.ass/.vtt) — internos y externos
-  - Descarga automática de subtítulos (via subliminal)
-  - Menú contextual con click derecho
-  - F → fullscreen · Space/click → play/pause · ← → → seek 10s
+  - Barra de progreso con seek (drag → seek al soltar)
+  - Pantalla completa: botón ⛶ en header + tecla F
+  - Subtítulos renderizados como overlay GTK4 sobre el video:
+      · Cargar archivo local (.srt / .vtt / .ass)
+      · Buscar y descargar desde OpenSubtitles (sin pip, xmlrpc stdlib)
+      · Desactivar
+  - Teclado: Space → pausa · F → fullscreen · ← → → seek 10s · Esc → cerrar
 """
 from __future__ import annotations
 
 import os
+import re
 import threading
 
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gst", "1.0")
-from gi.repository import Adw, Gtk, Gst, GLib, Gio
+from gi.repository import Adw, Gtk, Gst, GLib, Gio, Gdk
 
 GST_SECOND = 1_000_000_000
+
+# ── CSS para subtítulos ───────────────────────────────────────────────────────
+_SUB_CSS = b"""
+.cinema-sub {
+    color: white;
+    font-size: 22px;
+    font-weight: bold;
+    -gtk-text-shadow: 1px 1px 0 black, -1px -1px 0 black,
+                       1px -1px 0 black, -1px  1px 0 black;
+    background-color: rgba(0,0,0,0.55);
+    padding: 4px 16px;
+    border-radius: 6px;
+}
+"""
 
 
 class CinemaWindow(Adw.Window):
@@ -31,18 +48,32 @@ class CinemaWindow(Adw.Window):
         self.set_default_size(1024, 600)
         self.set_hide_on_close(True)
 
-        self._on_pause_cb:        callable | None = None
-        self._on_stop_cb:         callable | None = None
-        self._on_seek_cb:         callable | None = None  # cb(seconds: float)
-        self._seeking             = False
-        self._pending_seek: float | None = None   # valor 0–1 acumulado durante drag
-        self._timer_id: int       = 0
-        self._sub_file: str | None = None
-        self._video_path: str | None = None
+        self._on_pause_cb:    callable | None = None
+        self._on_stop_cb:     callable | None = None
+        self._on_seek_cb:     callable | None = None
+        self._seeking         = False
+        self._pending_seek:   float | None = None
+        self._timer_id:       int = 0
+        self._video_path:     str | None = None
 
+        # Subtítulos — lista de (start_ns, end_ns, text)
+        self._subtitles:      list[tuple[int, int, str]] = []
+        self._sub_file:       str | None = None
+
+        self._apply_css()
         self._build_ui()
-        self._build_context_menu()
         self._bind_keys()
+
+    # ── CSS ───────────────────────────────────────────────────────────────
+
+    def _apply_css(self) -> None:
+        provider = Gtk.CssProvider()
+        provider.load_from_data(_SUB_CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
     # ── Construcción UI ───────────────────────────────────────────────────
 
@@ -50,7 +81,7 @@ class CinemaWindow(Adw.Window):
         toolbar = Adw.ToolbarView()
         self.set_content(toolbar)
 
-        # Header
+        # ── Header ────────────────────────────────────────────────────────
         header = Adw.HeaderBar()
         header.set_show_back_button(False)
 
@@ -60,58 +91,100 @@ class CinemaWindow(Adw.Window):
         self._title_lbl.set_max_width_chars(40)
         header.set_title_widget(self._title_lbl)
 
-        sub_btn = Gtk.Button()
-        sub_btn.set_icon_name("media-view-subtitles-symbolic")
-        sub_btn.set_tooltip_text("Subtítulos")
-        sub_btn.connect("clicked", self._on_sub_btn)
-        header.pack_end(sub_btn)
+        # Botón subtítulos (popover con 3 opciones)
+        header.pack_end(self._build_sub_menu_btn())
+
+        # Botón fullscreen
+        self._fs_btn = Gtk.Button()
+        self._fs_btn.set_icon_name("view-fullscreen-symbolic")
+        self._fs_btn.set_tooltip_text("Pantalla completa (F)")
+        self._fs_btn.connect("clicked", lambda *_: self._toggle_fullscreen())
+        header.pack_end(self._fs_btn)
 
         toolbar.add_top_bar(header)
 
-        # ── Área central — video embebido + overlay de estado ─────────────
+        # ── Área central — video + overlays ───────────────────────────────
         overlay = Gtk.Overlay()
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
 
-        # Imagen que muestra el video via gtk4paintablesink
         self._video_picture = Gtk.Picture()
         self._video_picture.set_keep_aspect_ratio(True)
         self._video_picture.set_hexpand(True)
         self._video_picture.set_vexpand(True)
         overlay.set_child(self._video_picture)
 
-        # Overlay de estado (visible cuando no hay video)
+        # Placeholder (sin video cargado)
         self._status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self._status_box.set_halign(Gtk.Align.CENTER)
         self._status_box.set_valign(Gtk.Align.CENTER)
-
         icon = Gtk.Image.new_from_icon_name("video-display-symbolic")
         icon.set_pixel_size(64)
         icon.add_css_class("dim-label")
         self._status_box.append(icon)
-
         self._status_lbl = Gtk.Label(label="Abre un archivo para reproducir")
         self._status_lbl.add_css_class("title-2")
         self._status_box.append(self._status_lbl)
-
         overlay.add_overlay(self._status_box)
+
+        # Subtítulos (centrado abajo del video)
+        self._sub_lbl = Gtk.Label(label="")
+        self._sub_lbl.add_css_class("cinema-sub")
+        self._sub_lbl.set_halign(Gtk.Align.CENTER)
+        self._sub_lbl.set_valign(Gtk.Align.END)
+        self._sub_lbl.set_margin_bottom(32)
+        self._sub_lbl.set_wrap(True)
+        self._sub_lbl.set_max_width_chars(72)
+        self._sub_lbl.set_visible(False)
+        overlay.add_overlay(self._sub_lbl)
+
         toolbar.set_content(overlay)
 
         # ── Controles inferiores ───────────────────────────────────────────
         toolbar.add_bottom_bar(self._build_controls())
+
+    def _build_sub_menu_btn(self) -> Gtk.MenuButton:
+        btn = Gtk.MenuButton()
+        btn.set_icon_name("media-view-subtitles-symbolic")
+        btn.set_tooltip_text("Subtítulos")
+
+        popover = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_start(8); box.set_margin_end(8)
+        box.set_margin_top(8);   box.set_margin_bottom(8)
+
+        b_local = Gtk.Button(label="Cargar archivo…")
+        b_local.add_css_class("flat")
+        b_local.connect("clicked", lambda *_: (popover.popdown(), self._on_sub_open()))
+        box.append(b_local)
+
+        b_dl = Gtk.Button(label="Buscar en OpenSubtitles")
+        b_dl.add_css_class("flat")
+        b_dl.connect("clicked", lambda *_: (popover.popdown(), self._on_sub_download()))
+        box.append(b_dl)
+
+        sep = Gtk.Separator()
+        box.append(sep)
+
+        b_off = Gtk.Button(label="Desactivar subtítulos")
+        b_off.add_css_class("flat")
+        b_off.connect("clicked", lambda *_: (popover.popdown(), self._on_sub_off()))
+        box.append(b_off)
+
+        popover.set_child(box)
+        btn.set_popover(popover)
+        return btn
 
     def _build_controls(self) -> Gtk.Widget:
         wrap = Adw.Bin()
         wrap.add_css_class("toolbar")
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        vbox.set_margin_start(12)
-        vbox.set_margin_end(12)
-        vbox.set_margin_bottom(8)
-        vbox.set_margin_top(4)
+        vbox.set_margin_start(12); vbox.set_margin_end(12)
+        vbox.set_margin_bottom(8); vbox.set_margin_top(4)
         wrap.set_child(vbox)
 
-        # ── Barra de progreso ──────────────────────────────────────────────
+        # Barra de progreso
         prog_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self._pos_label = Gtk.Label(label="0:00")
@@ -123,16 +196,12 @@ class CinemaWindow(Adw.Window):
         self._progress.set_range(0, 1)
         self._progress.set_draw_value(False)
         self._progress.set_hexpand(True)
-        # GTK4: usar change-value (solo dispara en interacción del usuario,
-        # no en set_value() programático) + GestureClick para detectar
-        # inicio/fin del arrastre y activar el flag _seeking.
         self._progress.connect("change-value", self._on_change_value)
 
         drag = Gtk.GestureDrag()
         drag.connect("drag-begin", lambda *_: self._start_seek())
         drag.connect("drag-end",   lambda *_: self._end_seek())
         self._progress.add_controller(drag)
-
         prog_row.append(self._progress)
 
         self._dur_label = Gtk.Label(label="0:00")
@@ -142,7 +211,7 @@ class CinemaWindow(Adw.Window):
 
         vbox.append(prog_row)
 
-        # ── Botones ────────────────────────────────────────────────────────
+        # Botones
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self._play_btn = Gtk.Button(label="⏸")
@@ -156,7 +225,6 @@ class CinemaWindow(Adw.Window):
         stop_btn.connect("clicked", self._on_stop)
         btn_row.append(stop_btn)
 
-        # Saltar ±10s
         back_btn = Gtk.Button(label="⏪ 10s")
         back_btn.add_css_class("flat")
         back_btn.connect("clicked", lambda *_: self._seek_relative(-10))
@@ -170,30 +238,16 @@ class CinemaWindow(Adw.Window):
         spacer = Gtk.Box(); spacer.set_hexpand(True)
         btn_row.append(spacer)
 
-        # Subtítulos
-        self._sub_label = Gtk.Label(label="Sin subtítulos")
-        self._sub_label.add_css_class("dim-label")
-        self._sub_label.add_css_class("caption")
-        btn_row.append(self._sub_label)
+        # Estado de subtítulos (dim-label a la derecha)
+        self._sub_status = Gtk.Label(label="Sin subtítulos")
+        self._sub_status.add_css_class("dim-label")
+        self._sub_status.add_css_class("caption")
+        btn_row.append(self._sub_status)
 
         vbox.append(btn_row)
         return wrap
 
-    def _build_context_menu(self) -> None:
-        ag = Gio.SimpleActionGroup()
-        for name, cb in [
-            ("sub-open",     self._on_sub_open),
-            ("sub-download", self._on_sub_download),
-            ("sub-off",      self._on_sub_off),
-            ("close",        lambda *_: self.set_visible(False)),
-        ]:
-            a = Gio.SimpleAction.new(name, None)
-            a.connect("activate", cb)
-            ag.add_action(a)
-        self.insert_action_group("cinema", ag)
-
     def _bind_keys(self) -> None:
-        from gi.repository import Gdk
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
@@ -201,7 +255,6 @@ class CinemaWindow(Adw.Window):
     # ── API pública ───────────────────────────────────────────────────────
 
     def attach_paintable(self, paintable: object) -> None:
-        """Conecta el paintable de gtk4paintablesink al widget de video."""
         if paintable:
             self._video_picture.set_paintable(paintable)
             self._status_box.set_visible(False)
@@ -222,24 +275,34 @@ class CinemaWindow(Adw.Window):
         self._on_stop_cb = cb
 
     def set_on_seek(self, cb: callable) -> None:
-        """cb(seconds: float) — llamado cuando el usuario hace seek."""
         self._on_seek_cb = cb
 
     def set_playing(self, playing: bool) -> None:
         self._play_btn.set_label("⏸" if playing else "▶")
-        # La etiqueta de estado se muestra sólo cuando no hay video
         if not self._video_picture.get_paintable():
             self._status_lbl.set_text(
                 os.path.basename(self._video_path or "") if playing else
                 ("Pausado" if self._video_path else "Abre un archivo para reproducir")
             )
         if playing and self._timer_id == 0:
-            self._timer_id = GLib.timeout_add(400, self._update_progress)
+            self._timer_id = GLib.timeout_add(200, self._update_progress)
         elif not playing and self._timer_id:
             GLib.source_remove(self._timer_id)
             self._timer_id = 0
 
-    # ── Progreso ──────────────────────────────────────────────────────────
+    # ── Pantalla completa ─────────────────────────────────────────────────
+
+    def _toggle_fullscreen(self) -> None:
+        if self.is_fullscreen():
+            self.unfullscreen()
+            self._fs_btn.set_icon_name("view-fullscreen-symbolic")
+            self._fs_btn.set_tooltip_text("Pantalla completa (F)")
+        else:
+            self.fullscreen()
+            self._fs_btn.set_icon_name("view-restore-symbolic")
+            self._fs_btn.set_tooltip_text("Salir de pantalla completa (F / Esc)")
+
+    # ── Progreso + subtítulos ─────────────────────────────────────────────
 
     def _update_progress(self) -> bool:
         from audifonospro.cinema.gst_router import get_router
@@ -252,7 +315,22 @@ class CinemaWindow(Adw.Window):
             self._progress.handler_unblock_by_func(self._on_change_value)
             self._pos_label.set_text(_fmt_time(pos))
             self._dur_label.set_text(_fmt_time(dur))
-        return True  # mantener el timer
+        self._tick_subtitles(pos)
+        return True
+
+    def _tick_subtitles(self, pos_ns: int) -> None:
+        if not self._subtitles:
+            return
+        text = ""
+        for start, end, line in self._subtitles:
+            if start <= pos_ns <= end:
+                text = line
+                break
+        if text != self._sub_lbl.get_text():
+            self._sub_lbl.set_text(text)
+        self._sub_lbl.set_visible(bool(text))
+
+    # ── Seek ──────────────────────────────────────────────────────────────
 
     def _start_seek(self) -> None:
         self._seeking = True
@@ -272,32 +350,21 @@ class CinemaWindow(Adw.Window):
                     self._on_seek_cb(pos_ns / GST_SECOND)
 
     def _on_change_value(
-        self,
-        scale: Gtk.Scale,
-        _scroll: Gtk.ScrollType,
-        value: float,
+        self, _scale: Gtk.Scale, _scroll: Gtk.ScrollType, value: float,
     ) -> bool:
-        """Dispara solo en interacción del usuario (no en set_value programático).
-
-        Durante el arrastre solo actualiza la etiqueta de tiempo — el seek real
-        ocurre en _end_seek() al soltar, evitando que FLUSH continuo congele el audio.
-        """
         from audifonospro.cinema.gst_router import get_router
         dur = get_router().duration_ns
         if dur <= 0:
             return False
-
         if self._seeking:
-            # Arrastre en curso: sólo actualizar etiqueta, acumular valor
             self._pos_label.set_text(_fmt_time(int(max(0.0, min(1.0, value)) * dur)))
             self._pending_seek = value
         else:
-            # Click puntual o teclado: seek inmediato
             pos_ns = int(max(0.0, min(1.0, value)) * dur)
             get_router().seek_ns(pos_ns)
             if self._on_seek_cb:
                 self._on_seek_cb(pos_ns / GST_SECOND)
-        return False  # permitir que el scale actualice su valor visualmente
+        return False
 
     def _seek_relative(self, seconds: int) -> None:
         from audifonospro.cinema.gst_router import get_router
@@ -319,18 +386,20 @@ class CinemaWindow(Adw.Window):
             self._on_stop_cb()
 
     def _on_key(
-        self,
-        _ctrl: Gtk.EventControllerKey,
-        keyval: int,
-        _keycode: int,
-        _state: object,
+        self, _ctrl: Gtk.EventControllerKey,
+        keyval: int, _keycode: int, _state: object,
     ) -> bool:
-        from gi.repository import Gdk
         match keyval:
             case Gdk.KEY_space:
                 self._pause_toggle()
+            case Gdk.KEY_f | Gdk.KEY_F:
+                self._toggle_fullscreen()
             case Gdk.KEY_Escape:
-                self.set_visible(False)
+                if self.is_fullscreen():
+                    self.unfullscreen()
+                    self._fs_btn.set_icon_name("view-fullscreen-symbolic")
+                else:
+                    self.set_visible(False)
             case Gdk.KEY_Left:
                 self._seek_relative(-10)
             case Gdk.KEY_Right:
@@ -339,17 +408,14 @@ class CinemaWindow(Adw.Window):
                 return False
         return True
 
-    # ── Subtítulos UI ─────────────────────────────────────────────────────
+    # ── Subtítulos ────────────────────────────────────────────────────────
 
-    def _on_sub_btn(self, *_: object) -> None:
-        self._on_sub_open(None, None)
-
-    def _on_sub_open(self, _action: object, _param: object) -> None:
+    def _on_sub_open(self) -> None:
         dialog = Gtk.FileDialog()
         dialog.set_title("Seleccionar archivo de subtítulos")
         f = Gtk.FileFilter()
-        f.set_name("Subtítulos (.srt, .ass, .vtt)")
-        for pat in ["*.srt", "*.ass", "*.ssa", "*.vtt", "*.sub"]:
+        f.set_name("Subtítulos (.srt, .vtt, .ass)")
+        for pat in ["*.srt", "*.vtt", "*.ass", "*.ssa", "*.sub"]:
             f.add_pattern(pat)
         store = Gio.ListStore.new(Gtk.FileFilter)
         store.append(f)
@@ -358,42 +424,40 @@ class CinemaWindow(Adw.Window):
 
     def _on_sub_file_chosen(self, dialog: Gtk.FileDialog, result: object) -> None:
         try:
-            gfile = dialog.open_finish(result)
-            path = gfile.get_path()
+            path = dialog.open_finish(result).get_path()
             self._load_subtitle(path)
         except Exception:
             pass
 
-    def _on_sub_off(self, *_: object) -> None:
-        from audifonospro.cinema.gst_router import get_router
-        get_router().disable_subtitles()
-        self._sub_label.set_text("Sin subtítulos")
+    def _on_sub_off(self) -> None:
+        self._subtitles = []
         self._sub_file = None
+        self._sub_lbl.set_text("")
+        self._sub_lbl.set_visible(False)
+        self._sub_status.set_text("Sin subtítulos")
 
-    def _on_sub_download(self, *_: object) -> None:
+    def _on_sub_download(self) -> None:
         if not self._video_path:
             return
-        path = self._video_path
-        self._sub_label.set_text("Descargando subtítulos…")
+        self._sub_status.set_text("Buscando en OpenSubtitles…")
         threading.Thread(
-            target=self._download_subtitles, args=(path,), daemon=True
+            target=self._download_thread, args=(self._video_path,), daemon=True
         ).start()
 
-    def _download_subtitles(self, path: str) -> None:
-        """Descarga subtítulos automáticamente via OpenSubtitles XML-RPC (stdlib, sin pip)."""
+    def _download_thread(self, path: str) -> None:
         try:
             from audifonospro.cinema.subtitles import auto_download
             saved = auto_download(path, languages=["es", "en"])
             GLib.idle_add(self._load_subtitle, saved)
         except Exception as exc:
-            GLib.idle_add(self._sub_label.set_text, f"Sin subtítulos: {exc}")
+            GLib.idle_add(self._sub_status.set_text, f"Error: {exc}")
 
     def _load_subtitle(self, path: str) -> None:
-        """Carga un archivo de subtítulos en el pipeline GStreamer."""
-        from audifonospro.cinema.gst_router import get_router
         self._sub_file = path
-        get_router().load_subtitle(path)
-        self._sub_label.set_text(f"Subs: {os.path.basename(path)}")
+        self._subtitles = _parse_subtitles(path)
+        name = os.path.basename(path)
+        n = len(self._subtitles)
+        self._sub_status.set_text(f"Subs: {name} ({n} líneas)")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -401,3 +465,56 @@ class CinemaWindow(Adw.Window):
 def _fmt_time(ns: int) -> str:
     s = ns // GST_SECOND
     return f"{s // 60}:{s % 60:02d}"
+
+
+_TS_LONG  = re.compile(
+    r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)"
+)
+_TS_SHORT = re.compile(
+    r"(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+)[,.](\d+)"
+)
+_TAG      = re.compile(r"<[^>]+>|\{[^}]+\}")   # HTML + ASS tags
+
+
+def _parse_subtitles(path: str) -> list[tuple[int, int, str]]:
+    """
+    Parser de subtítulos para .srt, .vtt y .ass básico.
+    Devuelve [(start_ns, end_ns, text), ...] ordenado por tiempo.
+    """
+    try:
+        content = open(path, encoding="utf-8-sig", errors="replace").read()
+    except Exception:
+        return []
+
+    subs: list[tuple[int, int, str]] = []
+    blocks = re.split(r"\n\s*\n", content.strip())
+
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
+            continue
+        for i, line in enumerate(lines):
+            # Ignorar líneas de encabezado VTT / número de secuencia SRT
+            m = _TS_LONG.search(line)
+            if m:
+                h1,m1,s1,ms1 = int(m[1]),int(m[2]),int(m[3]),int(m[4])
+                h2,m2,s2,ms2 = int(m[5]),int(m[6]),int(m[7]),int(m[8])
+            else:
+                m = _TS_SHORT.search(line)
+                if m:
+                    h1,m1,s1,ms1 = 0,int(m[1]),int(m[2]),int(m[3])
+                    h2,m2,s2,ms2 = 0,int(m[4]),int(m[5]),int(m[6])
+                else:
+                    continue
+
+            start_ns = ((h1*3600 + m1*60 + s1)*1000 + ms1) * 1_000_000
+            end_ns   = ((h2*3600 + m2*60 + s2)*1000 + ms2) * 1_000_000
+
+            text = "\n".join(lines[i+1:])
+            text = _TAG.sub("", text).strip()
+            if text:
+                subs.append((start_ns, end_ns, text))
+            break
+
+    subs.sort(key=lambda t: t[0])
+    return subs
