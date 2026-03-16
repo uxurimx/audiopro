@@ -182,3 +182,28 @@ def get_sink_name_for_mac(mac: str) -> str | None:
         if mac.replace(":", ":").lower() in sink["name"].lower():
             return sink["name"]
     return None
+
+
+def smart_route_stream(stream_serial: int, target_sink_name: str) -> tuple[bool, str]:
+    """
+    Mueve un stream de audio de forma inteligente.
+
+    Estrategia:
+    1. Cambia el sink por defecto → EasyEffects y apps con auto-connect siguen
+       automáticamente sin interrumpir.
+    2. También intenta mover el stream directamente (para apps que no siguen
+       el default, ej. apps nativas con sink fijo).
+
+    Esto es lo correcto para sistemas con EasyEffects:
+      Spotify → easyeffects_sink → [EQ] → DEFAULT_SINK
+    Cambiando el default sink, EasyEffects cambia su salida y el usuario
+    escucha el resultado en el nuevo dispositivo.
+    """
+    # Paso 1 (principal): cambiar default sink
+    ok, msg = set_default_sink(target_sink_name)
+
+    # Paso 2 (complementario): intentar mover el stream directamente
+    # Falla silenciosamente para streams en easyeffects (esperable)
+    move_stream_to_sink(stream_serial, target_sink_name)
+
+    return ok, msg

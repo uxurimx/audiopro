@@ -78,21 +78,48 @@ class DevicesPage(Adw.PreferencesPage):
         return btn
 
     def _build_cinema_row(self) -> None:
-        row = Adw.ActionRow()
-        row.set_title("Archivo de video")
+        # Fila: selector de archivo
+        file_row = Adw.ActionRow()
+        file_row.set_title("Archivo de video")
         self._mkv_path_label = Gtk.Label(label="Ningún archivo seleccionado")
         self._mkv_path_label.add_css_class("dim-label")
-        self._mkv_path_label.set_ellipsize(3)   # PANGO_ELLIPSIZE_END
-        self._mkv_path_label.set_max_width_chars(30)
+        self._mkv_path_label.set_ellipsize(3)
+        self._mkv_path_label.set_max_width_chars(28)
         self._mkv_path_label.set_valign(Gtk.Align.CENTER)
-        row.add_suffix(self._mkv_path_label)
+        file_row.add_suffix(self._mkv_path_label)
 
         open_btn = Gtk.Button(label="Abrir…")
         open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.add_css_class("flat")
         open_btn.connect("clicked", self._on_open_mkv)
-        row.add_suffix(open_btn)
-        self._cinema_group.add(row)
+        file_row.add_suffix(open_btn)
+        self._cinema_group.add(file_row)
+
+        # Fila: controles de reproducción (ocultos hasta abrir archivo)
+        ctrl_row = Adw.ActionRow()
+        ctrl_row.set_title("Reproducción")
+        ctrl_row.set_visible(False)
+        self._cinema_ctrl_row = ctrl_row
+
+        ctrl_box = Gtk.Box(spacing=8)
+        ctrl_box.set_valign(Gtk.Align.CENTER)
+
+        self._cinema_play_btn = Gtk.Button(label="▶  Reproducir")
+        self._cinema_play_btn.add_css_class("suggested-action")
+        self._cinema_play_btn.connect("clicked", self._on_cinema_play)
+        ctrl_box.append(self._cinema_play_btn)
+
+        stop_btn = Gtk.Button(label="⏹")
+        stop_btn.add_css_class("destructive-action")
+        stop_btn.connect("clicked", self._on_cinema_stop)
+        ctrl_box.append(stop_btn)
+
+        ctrl_row.add_suffix(ctrl_box)
+        self._cinema_group.add(ctrl_row)
+
+        # Pistas de audio (se generan dinámicamente al abrir el archivo)
+        self._cinema_track_rows: list[Adw.ActionRow] = []
+        self._cinema_path: str | None = None
 
     # ── Polling ───────────────────────────────────────────────────────────
 
@@ -185,10 +212,112 @@ class DevicesPage(Adw.PreferencesPage):
         try:
             gfile = dialog.open_finish(result)
             path = gfile.get_path()
-            self._mkv_path_label.set_text(path)
-            # TODO Cinema Mode (Fase 2b): GStreamer multi-track routing
         except Exception:
-            pass
+            return
+
+        import os
+        self._mkv_path_label.set_text(os.path.basename(path))
+        self._cinema_path = path
+        self._mkv_path_label.set_tooltip_text(path)
+
+        # Descubrir pistas en hilo worker
+        threading.Thread(target=self._discover_tracks, args=(path,), daemon=True).start()
+
+    def _discover_tracks(self, path: str) -> None:
+        try:
+            from audifonospro.cinema.gst_router import get_router
+            tracks = get_router().discover(path)
+        except Exception as exc:
+            GLib.idle_add(self._on_tracks_error, str(exc))
+            return
+        GLib.idle_add(self._on_tracks_found, tracks)
+
+    def _on_tracks_error(self, msg: str) -> bool:
+        self._mkv_path_label.set_text(f"Error: {msg[:40]}")
+        return False
+
+    def _on_tracks_found(self, tracks: list) -> bool:
+        # Eliminar filas de pistas anteriores
+        for row in self._cinema_track_rows:
+            self._cinema_group.remove(row)
+        self._cinema_track_rows.clear()
+
+        # Obtener sinks disponibles para los dropdowns
+        from audifonospro.audio.routing import list_sinks
+        sinks = list_sinks()
+        sink_labels = ["─ Sin audio"] + [
+            f"{s['description'] or s['name']}  [{s['state']}]" for s in sinks
+        ]
+        sink_names = [None] + [s["name"] for s in sinks]
+
+        for track in tracks:
+            row = Adw.ActionRow()
+            row.set_title(track.label)
+            row.set_subtitle(f"{track.sample_rate // 1000}kHz")
+
+            model = Gtk.StringList.new(sink_labels)
+            dd = Gtk.DropDown(model=model)
+            dd.set_valign(Gtk.Align.CENTER)
+            dd.set_selected(0)
+
+            # Auto-asignar: pista 0 → JBL, pista 1 → FX-313 (si están disponibles)
+            if track.index == 0 and len(sink_names) > 1:
+                dd.set_selected(1)
+            elif track.index == 1 and len(sink_names) > 2:
+                dd.set_selected(2)
+
+            dd.connect("notify::selected", self._on_track_sink_selected,
+                       track.index, sink_names)
+            row.add_suffix(dd)
+            row.set_activatable_widget(dd)
+            self._cinema_group.add(row)
+            self._cinema_track_rows.append(row)
+
+        # Mostrar controles
+        self._cinema_ctrl_row.set_visible(True)
+        self._cinema_ctrl_row.set_subtitle(f"{len(tracks)} pista(s) de audio detectadas")
+        return False
+
+    def _on_track_sink_selected(
+        self, dd: Gtk.DropDown, _param: object, track_idx: int, sink_names: list
+    ) -> None:
+        idx = dd.get_selected()
+        if idx < len(sink_names):
+            from audifonospro.cinema.gst_router import get_router
+            sink = sink_names[idx]
+            if sink:
+                get_router().assign(track_idx, sink)
+            else:
+                get_router().clear_assignments()  # simplificación: reset si "Sin audio"
+
+    def _on_cinema_play(self, _btn: Gtk.Button) -> None:
+        from audifonospro.cinema.gst_router import get_router
+        router = get_router()
+        if router.is_playing:
+            router.pause()
+            self._cinema_play_btn.set_label("▶  Reanudar")
+        else:
+            if self._cinema_path:
+                router.set_on_eos(self._on_cinema_eos)
+                router.set_on_error(self._on_cinema_error)
+                ok = router.play(self._cinema_path, show_video=True)
+                if ok:
+                    self._cinema_play_btn.set_label("⏸  Pausar")
+                else:
+                    self._cinema_ctrl_row.set_subtitle("Asigna al menos una pista antes de reproducir")
+
+    def _on_cinema_stop(self, _btn: Gtk.Button) -> None:
+        from audifonospro.cinema.gst_router import get_router
+        get_router().stop()
+        self._cinema_play_btn.set_label("▶  Reproducir")
+
+    def _on_cinema_eos(self) -> None:
+        self._cinema_play_btn.set_label("▶  Reproducir")
+        self._cinema_ctrl_row.set_subtitle("Reproducción finalizada")
+
+    def _on_cinema_error(self, msg: str) -> None:
+        self._cinema_play_btn.set_label("▶  Reproducir")
+        self._cinema_ctrl_row.set_subtitle(f"Error: {msg[:60]}")
 
     def stop_polling(self) -> None:
         self._running = False
@@ -203,6 +332,7 @@ class _StreamRow(Adw.ActionRow):
         super().__init__()
         self._serial = inp["serial"]
         self._updating = False
+        self._user_moved = False   # True cuando el usuario hizo una selección manual
 
         self.set_title(inp["app_name"])
         self.set_icon_name("multimedia-player-symbolic")
@@ -219,7 +349,7 @@ class _StreamRow(Adw.ActionRow):
         self._dd.set_tooltip_text("Redirigir a este dispositivo")
 
         # Seleccionar el sink actual
-        self._set_current_sink(inp["sink_id"])
+        self._set_current_sink_by_id(inp["sink_id"])
 
         self._dd.connect("notify::selected", self._on_sink_selected)
         self.add_suffix(self._dd)
@@ -228,12 +358,11 @@ class _StreamRow(Adw.ActionRow):
         self._update_subtitle(inp)
 
     def update(self, inp: dict, sinks: list[dict]) -> None:
-        """Actualiza datos del stream (no recrea el widget)."""
+        """Actualiza datos del stream. NO resetea el dropdown si el usuario acaba de mover."""
         self._updating = True
         self.set_title(inp["app_name"])
         self._update_subtitle(inp)
 
-        # Si cambiaron los sinks disponibles, actualizar modelo
         new_names = [s["name"] for s in sinks]
         if new_names != self._sink_names:
             self._sink_names = new_names
@@ -243,7 +372,11 @@ class _StreamRow(Adw.ActionRow):
             ]
             self._dd.set_model(Gtk.StringList.new(new_labels))
 
-        self._set_current_sink(inp["sink_id"])
+        # Actualizar selector SOLO si el sink real cambió externamente
+        # (no mientras el usuario acaba de hacer una selección manual)
+        if not self._user_moved:
+            self._set_current_sink_by_id(inp["sink_id"])
+
         self._updating = False
 
     def _update_subtitle(self, inp: dict) -> None:
@@ -254,15 +387,13 @@ class _StreamRow(Adw.ActionRow):
             parts.append("pausado")
         self.set_subtitle("  ·  ".join(parts) if parts else "reproduciendo")
 
-    def _set_current_sink(self, sink_id: int) -> None:
-        """Selecciona en el dropdown el sink que está usando actualmente."""
-        # pactl list sinks short nos da IDs; buscamos por posición en la lista
+    def _set_current_sink_by_id(self, sink_id: int) -> None:
+        """Busca el índice del sink en la lista local y actualiza el dropdown."""
         from audifonospro.audio.routing import list_sinks
-        for i, sink in enumerate(list_sinks()):
-            if sink["id"] == sink_id:
-                self._updating = True
+        current_sinks = list_sinks()
+        for i, sink in enumerate(current_sinks):
+            if sink["id"] == sink_id and i < len(self._sink_names):
                 self._dd.set_selected(i)
-                self._updating = False
                 return
 
     def _on_sink_selected(self, dd: Gtk.DropDown, _param: object) -> None:
@@ -272,12 +403,18 @@ class _StreamRow(Adw.ActionRow):
         if idx < 0 or idx >= len(self._sink_names):
             return
         sink_name = self._sink_names[idx]
+        self._user_moved = True   # evitar que el próximo poll resetee la selección
         serial = self._serial
         threading.Thread(
-            target=self._do_move, args=(serial, sink_name), daemon=True
+            target=self._do_smart_move, args=(serial, sink_name), daemon=True
         ).start()
 
     @staticmethod
-    def _do_move(serial: int, sink_name: str) -> None:
-        from audifonospro.audio.routing import move_stream_to_sink
-        move_stream_to_sink(serial, sink_name)
+    def _do_smart_move(serial: int, sink_name: str) -> None:
+        """
+        Routing inteligente:
+          1. Cambia el default sink → EasyEffects y auto-connect siguen automáticamente
+          2. Intenta mover el stream directamente (fallback para apps sin auto-connect)
+        """
+        from audifonospro.audio.routing import smart_route_stream
+        smart_route_stream(serial, sink_name)
