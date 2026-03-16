@@ -26,6 +26,10 @@ class AudiofonosApp(Adw.Application):
         self.connect("activate", self._on_activate)
 
     def _on_activate(self, _app: "AudiofonosApp") -> None:
+        # Inicializar DB (crea el archivo si no existe, aplica migrations)
+        from audifonospro.db import init_db
+        init_db()
+
         self._apply_color_scheme()
         from audifonospro.ui.gtk.window import MainWindow
         win = MainWindow(application=self, settings=self.settings)

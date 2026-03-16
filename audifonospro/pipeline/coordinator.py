@@ -69,6 +69,9 @@ class TranslationPipeline:
         self.on_status:     Callable[[str, str], None] | None = None
         self.on_transcript: Callable[[str, str], None] | None = None
 
+        # DB — sesión activa
+        self._session_id: int | None = None
+
         # Config activa (se establece en start / reconfigure)
         self._src_code:      str = "en"
         self._dst_name:      str = "Español"
@@ -130,6 +133,27 @@ class TranslationPipeline:
 
             self._running = True
 
+            # Iniciar sesión en la DB
+            try:
+                from audifonospro.db.sessions import start_session
+                quality_map = {"whisper_cpp": "local", "openai": "high"}
+                quality = "balanced" if trans_provider == "openai" and stt_provider == "whisper_cpp" else quality_map.get(stt_provider, "local")
+                self._session_id = start_session(
+                    mode="translator",
+                    src_lang=src_code,
+                    dst_lang=dst_code,
+                    quality=quality,
+                )
+            except Exception:
+                self._session_id = None
+
+            # Notificar a la extensión GNOME
+            try:
+                from audifonospro.dbus.status_writer import write_status
+                write_status(pipeline_running=True, src_lang=src_code, dst_lang=dst_code)
+            except Exception:
+                pass
+
             self._threads = [
                 threading.Thread(target=self._capture_thread, daemon=True, name="t-capture"),
                 threading.Thread(target=self._stt_thread,     daemon=True, name="t-stt"),
@@ -162,6 +186,20 @@ class TranslationPipeline:
 
     def _stop_internal(self) -> None:
         self._running = False
+        # Cerrar sesión en la DB
+        if self._session_id is not None:
+            try:
+                from audifonospro.db.sessions import end_session
+                end_session(self._session_id)
+            except Exception:
+                pass
+            self._session_id = None
+        # Notificar a la extensión GNOME
+        try:
+            from audifonospro.dbus.status_writer import write_status
+            write_status(pipeline_running=False, src_lang="", dst_lang="")
+        except Exception:
+            pass
         # Desbloquear hilos con sentinelas
         for q in (self._q_segments, self._q_texts, self._q_translated):
             try:
@@ -285,7 +323,7 @@ class TranslationPipeline:
                 if text.strip():
                     self._update("stt", f"✓ {text[:50]}  ({elapsed} ms)")
                     try:
-                        self._q_texts.put(text.strip(), timeout=5.0)
+                        self._q_texts.put((text.strip(), elapsed), timeout=5.0)
                     except queue.Full:
                         pass
                 else:
@@ -316,11 +354,17 @@ class TranslationPipeline:
             if item is _SENTINEL or not self._running:
                 break
 
+            # Desempaquetar (text, stt_ms) que envía el hilo STT
+            if isinstance(item, tuple):
+                original_text, stt_ms = item
+            else:
+                original_text, stt_ms = item, 0
+
             self._update("trans", "Traduciendo…")
             t0 = time.monotonic()
             try:
                 translated = translate(
-                    item,
+                    original_text,
                     target_language=self._dst_name,
                     provider=self._trans_provider,
                     model=self._trans_model,
@@ -329,9 +373,23 @@ class TranslationPipeline:
                 elapsed = int((time.monotonic() - t0) * 1000)
                 if translated.strip():
                     self._update("trans", f"✓ {translated[:50]}  ({elapsed} ms)")
+                    # Guardar en DB
+                    try:
+                        from audifonospro.db.phrases import save_phrase
+                        save_phrase(
+                            session_id  = self._session_id,
+                            original    = original_text,
+                            translated  = translated.strip(),
+                            src_lang    = self._src_code,
+                            dst_lang    = self._dst_code,
+                            stt_ms      = stt_ms,
+                            trans_ms    = elapsed,
+                        )
+                    except Exception:
+                        pass
                     if self.on_transcript:
                         try:
-                            self.on_transcript(item, translated)
+                            self.on_transcript(original_text, translated)
                         except Exception:
                             pass
                     try:

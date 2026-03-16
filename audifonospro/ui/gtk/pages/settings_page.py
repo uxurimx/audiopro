@@ -35,6 +35,7 @@ class SettingsPage(Adw.PreferencesPage):
         self._build_appearance_group()
         self._build_bt_group()
         self._build_api_group()
+        self._build_gnome_ext_group()
         self._build_advanced_toggle()
         self._build_adv_anc_group()
         self._build_adv_controls_group()
@@ -109,6 +110,134 @@ class SettingsPage(Adw.PreferencesPage):
             key_status.add_css_class("dim-label")
         key_row.add_suffix(key_status)
         g.add(key_row)
+
+    # ── Extensión GNOME Shell ─────────────────────────────────────────────
+
+    def _build_gnome_ext_group(self) -> None:
+        g = Adw.PreferencesGroup()
+        g.set_title("Integración con GNOME")
+        g.set_description(
+            "Agrega un tile de audioPro en el Quick Settings "
+            "(panel de volumen/WiFi/Bluetooth).\n"
+            "Incluye: volumen por app, batería del audífono y selector de EQ."
+        )
+        self.add(g)
+
+        # ── Fila de estado ──
+        self._ext_status_row = Adw.ActionRow()
+        self._ext_status_row.set_title("Estado")
+        self._ext_status_row.set_icon_name("application-x-addon-symbolic")
+        self._ext_status_lbl = Gtk.Label()
+        self._ext_status_lbl.set_valign(Gtk.Align.CENTER)
+        self._ext_status_row.add_suffix(self._ext_status_lbl)
+        g.add(self._ext_status_row)
+
+        # ── Fila de acción ──
+        action_row = Adw.ActionRow()
+        action_row.set_title("Extensión GNOME Shell")
+        action_row.set_subtitle("audiopro@robit.dev")
+
+        btn_box = Gtk.Box(spacing=8)
+        btn_box.set_valign(Gtk.Align.CENTER)
+
+        self._ext_install_btn = Gtk.Button(label="Instalar")
+        self._ext_install_btn.add_css_class("suggested-action")
+        self._ext_install_btn.connect("clicked", self._on_ext_install)
+        btn_box.append(self._ext_install_btn)
+
+        self._ext_remove_btn = Gtk.Button(label="Desinstalar")
+        self._ext_remove_btn.add_css_class("destructive-action")
+        self._ext_remove_btn.connect("clicked", self._on_ext_remove)
+        btn_box.append(self._ext_remove_btn)
+
+        self._ext_spinner = Gtk.Spinner()
+        btn_box.append(self._ext_spinner)
+
+        action_row.add_suffix(btn_box)
+        g.add(action_row)
+
+        # ── Nota informativa ──
+        note_row = Adw.ActionRow()
+        note_row.set_title("Activación")
+        note_row.set_subtitle(
+            "En Wayland, GNOME requiere cerrar sesión y volver a entrar "
+            "para cargar extensiones nuevas."
+        )
+        note_row.set_icon_name("dialog-information-symbolic")
+        g.add(note_row)
+
+        # Cargar estado inicial en segundo plano
+        threading.Thread(target=self._ext_refresh_status, daemon=True).start()
+
+    def _ext_refresh_status(self) -> None:
+        try:
+            from audifonospro.gnome_ext.installer import get_status
+            st = get_status()
+        except Exception:
+            st = {"installed": False, "enabled": False, "running": False}
+        GLib.idle_add(self._ext_apply_status, st)
+
+    def _ext_apply_status(self, st: dict) -> bool:
+        installed = st.get("installed", False)
+        enabled   = st.get("enabled",   False)
+        running   = st.get("running",   False)
+
+        if running:
+            text = "Activa en esta sesión"
+            css  = "success"
+        elif installed and enabled:
+            text = "Instalada — requiere re-login"
+            css  = "warning"
+        elif installed:
+            text = "Instalada, no habilitada"
+            css  = "dim-label"
+        else:
+            text = "No instalada"
+            css  = "dim-label"
+
+        self._ext_status_lbl.set_text(text)
+        for cls in ("success", "warning", "error", "dim-label"):
+            self._ext_status_lbl.remove_css_class(cls)
+        self._ext_status_lbl.add_css_class(css)
+
+        self._ext_install_btn.set_sensitive(not installed)
+        self._ext_install_btn.set_label("Instalada" if installed else "Instalar")
+        self._ext_remove_btn.set_sensitive(installed)
+        return False
+
+    def _on_ext_install(self, _btn: Gtk.Button) -> None:
+        self._ext_install_btn.set_sensitive(False)
+        self._ext_remove_btn.set_sensitive(False)
+        self._ext_spinner.start()
+        threading.Thread(target=self._ext_install_thread, daemon=True).start()
+
+    def _ext_install_thread(self) -> None:
+        from audifonospro.gnome_ext.installer import install, get_status
+        ok, msg = install()
+        st = get_status()
+        GLib.idle_add(self._ext_done, ok, msg, st)
+
+    def _on_ext_remove(self, _btn: Gtk.Button) -> None:
+        self._ext_install_btn.set_sensitive(False)
+        self._ext_remove_btn.set_sensitive(False)
+        self._ext_spinner.start()
+        threading.Thread(target=self._ext_remove_thread, daemon=True).start()
+
+    def _ext_remove_thread(self) -> None:
+        from audifonospro.gnome_ext.installer import uninstall, get_status
+        ok, msg = uninstall()
+        st = get_status()
+        GLib.idle_add(self._ext_done, ok, msg, st)
+
+    def _ext_done(self, ok: bool, msg: str, st: dict) -> bool:
+        self._ext_spinner.stop()
+        self._ext_status_row.set_subtitle(msg)
+        if ok:
+            self._ext_status_row.remove_css_class("error")
+        else:
+            self._ext_status_row.add_css_class("error")
+        self._ext_apply_status(st)
+        return False
 
     def _build_advanced_toggle(self) -> None:
         g = Adw.PreferencesGroup()

@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Nombre comercial: audioPro** — el paquete Python y los archivos internos siguen llamándose `audifonospro` por compatibilidad. El `application-id` GTK es `dev.robit.audifonospro`.
+
 ## Running the project
 
 ```bash
@@ -104,4 +106,34 @@ audifonospro/
 TRANSLATION__PROVIDER=ollama audifonospro
 ANC__DEFAULT_LEVEL=3 audifonospro
 AUDIO__INPUT_DEVICE="JBL" audifonospro
+```
+
+### GNOME Shell Extension (Quick Settings)
+
+UUID: `audiopro@robit.dev`
+Path: `~/.local/share/gnome-shell/extensions/audiopro@robit.dev/`
+
+Agrega un tile en el Quick Settings (como Wi-Fi/BT) con:
+- Sliders de volumen por app (Gvc.MixerControl)
+- Batería + codec de dispositivos BT
+- Selector de presets EQ
+- Botón para abrir la app
+
+**IPC**: escritura sin D-Bus:
+- `~/.cache/audifonospro/status.json` → escrito por `audifonospro/dbus/status_writer.py`, leído por la extensión (refresh 5s)
+- `~/.config/audifonospro/eq_preset` → escrito por la extensión, leído por el pipeline
+
+**Activar extensión** (requiere re-login en Wayland):
+```bash
+# Ya agregado a dconf. Solo cerrar sesión y volver a entrar.
+dconf read /org/gnome/shell/enabled-extensions
+# Debe incluir 'audiopro@robit.dev'
+```
+
+**Re-instalar tras cambios** en extension.js:
+```bash
+cd ~/.local/share/gnome-shell/extensions/
+zip -j /tmp/audiopro.zip audiopro@robit.dev/{metadata.json,extension.js,stylesheet.css}
+gnome-extensions install --force /tmp/audiopro.zip
+# Luego re-login
 ```

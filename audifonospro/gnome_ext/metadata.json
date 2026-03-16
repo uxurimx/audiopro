@@ -1,0 +1,8 @@
+{
+  "uuid": "audiopro@robit.dev",
+  "name": "audioPro",
+  "description": "Volumen por app, dispositivos BT y EQ desde el panel de Quick Settings",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48", "49"],
+  "url": "https://github.com/robit/audifonospro"
+}

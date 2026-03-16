@@ -1,0 +1,10 @@
+/* audioPro Quick Settings Extension — styles */
+
+.audiopro-stream-row {
+    spacing: 8px;
+    padding: 1px 0;
+}
+
+.audiopro-stream-row StSlider {
+    min-width: 100px;
+}
