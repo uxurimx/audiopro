@@ -27,27 +27,40 @@ class CinemaPage(Adw.PreferencesPage):
         self._cinema_path: str | None = None
         self._cinema_win = None
         self._video_sink = None
-        self._cinema_track_rows: list[Adw.ActionRow] = []
+        self._tracks: list = []          # pistas descubiertas en el archivo
+        self._device_rows: list[Adw.ActionRow] = []   # filas de dispositivos
 
-        # ── Instrucción ───────────────────────────────────────────────────
-        info_group = Adw.PreferencesGroup()
-        self.add(info_group)
-        info_row = Adw.ActionRow()
-        info_row.set_title("¿Cómo usar?")
-        info_row.set_subtitle(
-            "Abre un MKV o MP4 con múltiples pistas de audio. "
-            "Asigna cada pista a un dispositivo — cada persona escucha su idioma."
-        )
-        info_row.set_icon_name("video-display-symbolic")
-        info_group.add(info_row)
-
-        # ── Sección principal ─────────────────────────────────────────────
+        # ── Sección: archivo ──────────────────────────────────────────────
         self._cinema_group = Adw.PreferencesGroup()
-        self._cinema_group.set_title("Archivo y pistas")
+        self._cinema_group.set_title("Archivo")
         self.add(self._cinema_group)
         self._build_cinema_row()
 
+        # ── Sección: dispositivos (se rellena al abrir archivo) ───────────
+        self._dev_group = Adw.PreferencesGroup()
+        self._dev_group.set_title("Dispositivos")
+        self._dev_group.set_description(
+            "Cada dispositivo conectado puede escuchar una pista diferente. "
+            "Varios pueden compartir la misma pista."
+        )
+        self._dev_group.set_visible(False)
+        self._dev_group.set_header_suffix(self._build_refresh_btn())
+        self.add(self._dev_group)
+
+        self._no_devices_row = Adw.ActionRow()
+        self._no_devices_row.set_title("Sin dispositivos de audio")
+        self._no_devices_row.set_subtitle("Conecta un altavoz o audífono primero")
+        self._dev_group.add(self._no_devices_row)
+
     # ── Construcción UI ───────────────────────────────────────────────────
+
+    def _build_refresh_btn(self) -> Gtk.Button:
+        btn = Gtk.Button()
+        btn.set_icon_name("view-refresh-symbolic")
+        btn.set_tooltip_text("Actualizar dispositivos")
+        btn.add_css_class("flat")
+        btn.connect("clicked", self._on_refresh_devices)
+        return btn
 
     def _build_cinema_row(self) -> None:
         # Fila: selector de archivo
@@ -135,51 +148,82 @@ class CinemaPage(Adw.PreferencesPage):
         return False
 
     def _on_tracks_found(self, tracks: list) -> bool:
-        for row in self._cinema_track_rows:
-            self._cinema_group.remove(row)
-        self._cinema_track_rows.clear()
+        self._tracks = tracks
+        n = len(tracks)
+        self._cinema_ctrl_row.set_visible(True)
+        self._cinema_ctrl_row.set_subtitle(f"{n} pista(s) de audio detectadas")
+        self._dev_group.set_visible(True)
+        self._populate_device_rows()
+        return False
+
+    def _populate_device_rows(self) -> None:
+        """Construye una fila por cada sink disponible con selector de pista."""
+        # Limpiar filas anteriores (excepto _no_devices_row)
+        for row in self._device_rows:
+            self._dev_group.remove(row)
+        self._device_rows.clear()
 
         from audifonospro.audio.routing import list_sinks
         sinks = list_sinks()
-        sink_labels = ["─ Sin audio"] + [
-            f"{s['description'] or s['name']}  [{s['state']}]" for s in sinks
+
+        self._no_devices_row.set_visible(len(sinks) == 0)
+
+        # Opciones de pista para el dropdown
+        track_labels = ["Sin audio"] + [
+            f"Pista {t.index} — {t.label}" for t in self._tracks
         ]
-        sink_names = [None] + [s["name"] for s in sinks]
+        # índice 0 = sin audio, índice i+1 = pista i
 
-        for track in tracks:
+        for i, sink in enumerate(sinks):
             row = Adw.ActionRow()
-            row.set_title(track.label)
-            row.set_subtitle(f"Pista {track.index}  ·  {track.sample_rate // 1000} kHz")
+            row.set_title(sink.get("description") or sink["name"])
+            row.set_subtitle(sink["name"])
+            row.set_icon_name("audio-speakers-symbolic")
 
-            model = Gtk.StringList.new(sink_labels)
+            model = Gtk.StringList.new(track_labels)
             dd = Gtk.DropDown(model=model)
             dd.set_valign(Gtk.Align.CENTER)
-            dd.connect("notify::selected", self._on_track_sink_selected,
-                       track.index, sink_names)
+            dd.set_tooltip_text("Pista de audio que escucha este dispositivo")
 
-            if track.index == 0 and len(sink_names) > 1:
-                dd.set_selected(1)
-            elif track.index == 1 and len(sink_names) > 2:
-                dd.set_selected(2)
+            # Asignación inicial: repartir pistas disponibles en orden
+            if self._tracks and i < len(self._tracks):
+                dd.set_selected(i + 1)   # pista i (saltando "Sin audio")
             else:
                 dd.set_selected(0)
 
+            dd.connect("notify::selected", self._on_device_track_selected,
+                       sink["name"])
             row.add_suffix(dd)
             row.set_activatable_widget(dd)
-            self._cinema_group.add(row)
-            self._cinema_track_rows.append(row)
+            self._dev_group.add(row)
+            self._device_rows.append(row)
 
-        self._cinema_ctrl_row.set_visible(True)
-        self._cinema_ctrl_row.set_subtitle(f"{len(tracks)} pista(s) de audio detectadas")
-        return False
+            # Registrar asignación inicial en el router
+            if self._tracks and i < len(self._tracks):
+                self._assign(sink["name"], self._tracks[i].index)
 
-    def _on_track_sink_selected(
-        self, dd: Gtk.DropDown, _param: object, track_idx: int, sink_names: list
+    def _on_device_track_selected(
+        self, dd: Gtk.DropDown, _param: object, sink_name: str
     ) -> None:
         idx = dd.get_selected()
-        if idx < len(sink_names):
+        if idx == 0:
+            self._assign(sink_name, None)
+        else:
+            track_idx = idx - 1   # offset por "Sin audio"
+            if track_idx < len(self._tracks):
+                self._assign(sink_name, self._tracks[track_idx].index)
+
+    def _on_refresh_devices(self, _btn: Gtk.Button | None = None) -> None:
+        if self._tracks:
+            self._populate_device_rows()
+
+    @staticmethod
+    def _assign(sink_name: str, track_idx: int | None) -> None:
+        try:
             from audifonospro.cinema.gst_router import get_router
-            get_router().assign(track_idx, sink_names[idx])
+            get_router().assign(sink_name, track_idx)
+        except Exception:
+            pass
 
     # ── Callbacks de reproducción ─────────────────────────────────────────
 

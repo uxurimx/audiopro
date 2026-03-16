@@ -22,6 +22,7 @@ API:
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 
@@ -94,6 +95,11 @@ class AudioTrack:
         return f"{lang}{title_part} — {codec_short} {self.channel_label}"
 
 
+def _safe_name(s: str) -> str:
+    """Convierte un sink_name a nombre válido para elementos GStreamer."""
+    return re.sub(r"[^a-zA-Z0-9]", "_", s)[:32]
+
+
 class CinemaRouter:
     """
     Gestiona la reproducción multi-salida de un archivo de video.
@@ -102,7 +108,11 @@ class CinemaRouter:
 
     def __init__(self) -> None:
         self._pipeline: Gst.Pipeline | None = None
-        self._assignments: dict[int, str] = {}   # track_index → sink_name
+        # sink_name → track_index  (múltiples sinks pueden compartir la misma pista)
+        self._assignments: dict[str, int] = {}
+        # (track_idx, sink_name) → tee request src pad  (para hot-swap)
+        self._tee_branches: dict[tuple[int, str], Gst.Pad] = {}
+        self._audio_pads: dict[int, Gst.Pad] = {}
         self._on_eos: callable | None = None
         self._on_error: callable[[str], None] | None = None
         self._lock = threading.Lock()
@@ -148,21 +158,21 @@ class CinemaRouter:
 
     # ── Asignación de pistas ──────────────────────────────────────────────
 
-    def assign(self, track_index: int, sink_name: str | None) -> None:
+    def assign(self, sink_name: str, track_index: int | None) -> None:
         """
-        Asigna una pista de audio a un dispositivo de salida.
-        Si el pipeline está activo, hace el cambio en tiempo real (hot-swap).
-        sink_name=None → silenciar esa pista (fakesink).
+        Asigna un dispositivo de salida a una pista de audio.
+        Múltiples dispositivos pueden escuchar la misma pista.
+        track_index=None → silenciar ese dispositivo.
         """
         with self._lock:
-            if sink_name is not None:
-                self._assignments[track_index] = sink_name
+            if track_index is not None:
+                self._assignments[sink_name] = track_index
             else:
-                self._assignments.pop(track_index, None)
+                self._assignments.pop(sink_name, None)
         if self._pipeline:
             threading.Thread(
-                target=self._hot_swap_sink,
-                args=(track_index, sink_name),
+                target=self._hot_swap_device,
+                args=(sink_name, track_index),
                 daemon=True,
             ).start()
 
@@ -237,7 +247,8 @@ class CinemaRouter:
         self._sub_pipeline_ready = False
         self._pending_sub_file = getattr(self, "_queued_sub_file", None)
 
-        self._audio_pads: dict[int, Gst.Pad] = {}
+        self._audio_pads = {}
+        self._tee_branches = {}
         src.connect("pad-added", self._on_pad_added, pipeline, assignments)
 
         self._pipeline = pipeline
@@ -313,59 +324,34 @@ class CinemaRouter:
         # Aquí guardamos el path para la próxima reproducción
         return False
 
-    def _hot_swap_sink(self, track_index: int, sink_name: str | None) -> None:
+    def _hot_swap_device(self, sink_name: str, track_idx: int | None) -> None:
         """
-        Cambia el sink de una pista en tiempo real (corre en hilo worker).
+        Mueve un dispositivo de salida a otra pista en tiempo real.
 
-        Estrategia segura: pausar el pipeline → modificar → reanudar.
-        Evita el deadlock de llamar set_state(NULL) desde dentro de un probe
-        callback (el probe bloquea el streaming thread, y set_state espera
-        que el streaming thread termine → deadlock).
+        Estrategia segura: pausar → eliminar rama actual → añadir nueva → reanudar.
         """
         pipeline = self._pipeline
         if not pipeline:
             return
 
-        resample = pipeline.get_by_name(f"res_{track_index}")
-        if not resample:
-            return
-
-        src_pad = resample.get_static_pad("src")
-        if not src_pad or not src_pad.is_linked():
-            return
-
-        # Pausar pipeline para modificar la estructura de forma segura
         was_playing = pipeline.get_state(0).state == Gst.State.PLAYING
         pipeline.set_state(Gst.State.PAUSED)
-        pipeline.get_state(3 * Gst.SECOND)  # esperar a PAUSED
+        pipeline.get_state(3 * Gst.SECOND)
 
-        # Desenlazar y eliminar sink actual
-        peer = src_pad.get_peer()
-        if peer:
-            src_pad.unlink(peer)
-            old_elem = peer.get_parent_element()
-            if old_elem:
-                old_elem.set_state(Gst.State.NULL)
-                pipeline.remove(old_elem)
+        # Eliminar de la pista actual si existe
+        current_keys = [(t, s) for (t, s) in list(self._tee_branches.keys())
+                        if s == sink_name]
+        for old_track_idx, _ in current_keys:
+            tee = pipeline.get_by_name(f"tee_{old_track_idx}")
+            if tee:
+                self._remove_tee_branch(pipeline, tee, old_track_idx, sink_name)
 
-        # Crear y enlazar nuevo sink
-        if sink_name:
-            new_out = Gst.ElementFactory.make("pulsesink", f"out_{track_index}")
-            if new_out:
-                new_out.set_property("device", sink_name)
-            else:
-                new_out = Gst.ElementFactory.make("fakesink", f"fake_{track_index}")
-        else:
-            new_out = Gst.ElementFactory.make("fakesink", f"fake_{track_index}")
+        # Añadir a la nueva pista
+        if track_idx is not None:
+            tee = pipeline.get_by_name(f"tee_{track_idx}")
+            if tee:
+                self._add_tee_branch(pipeline, tee, track_idx, sink_name)
 
-        if new_out:
-            pipeline.add(new_out)
-            sink_pad = new_out.get_static_pad("sink")
-            if sink_pad:
-                src_pad.link(sink_pad)
-            new_out.sync_state_with_parent()
-
-        # Reanudar si estaba reproduciendo
         if was_playing:
             pipeline.set_state(Gst.State.PLAYING)
 
@@ -395,40 +381,94 @@ class CinemaRouter:
         self,
         pad: Gst.Pad,
         pipeline: Gst.Pipeline,
-        assignments: dict[int, str],
+        assignments: dict[str, int],
     ) -> None:
-        # Contar cuántos pads de audio hemos visto hasta ahora
+        # assignments = {sink_name: track_idx}
         audio_idx = len(self._audio_pads)
         self._audio_pads[audio_idx] = pad
 
-        sink_name = assignments.get(audio_idx)
-
-        # Construir mini-pipeline de audio: convert → resample → pulsesink/fakesink
-        convert  = Gst.ElementFactory.make("audioconvert",  f"conv_{audio_idx}")
+        # Cadena base: queue → audioconvert → audioresample → tee
+        queue    = Gst.ElementFactory.make("queue",        f"q_{audio_idx}")
+        convert  = Gst.ElementFactory.make("audioconvert", f"conv_{audio_idx}")
         resample = Gst.ElementFactory.make("audioresample", f"res_{audio_idx}")
-
-        if sink_name:
-            out = Gst.ElementFactory.make("pulsesink", f"out_{audio_idx}")
-            out.set_property("device", sink_name)
-        else:
-            out = Gst.ElementFactory.make("fakesink", f"fake_{audio_idx}")
-
-        queue = Gst.ElementFactory.make("queue", f"q_{audio_idx}")
+        tee      = Gst.ElementFactory.make("tee",           f"tee_{audio_idx}")
+        tee.set_property("allow-not-linked", True)
         queue.set_property("max-size-buffers", 200)
 
-        for elem in [queue, convert, resample, out]:
+        for elem in [queue, convert, resample, tee]:
             pipeline.add(elem)
 
-        # Orden correcto: enlazar cadena interna → sync → conectar pad upstream
         queue.link(convert)
         convert.link(resample)
-        resample.link(out)
+        resample.link(tee)
 
-        for elem in [queue, convert, resample, out]:
+        for elem in [queue, convert, resample, tee]:
             elem.sync_state_with_parent()
 
-        # Conectar el pad de uridecodebin DESPUÉS de que los elementos estén en PLAYING
+        # Crear una rama (queue branch → pulsesink) por cada sink asignado a esta pista
+        sinks_for_track = [s for s, t in assignments.items() if t == audio_idx]
+        if sinks_for_track:
+            for sink_name in sinks_for_track:
+                self._add_tee_branch(pipeline, tee, audio_idx, sink_name)
+        else:
+            # Sin sinks: fakesink para que el tee no bloquee el pipeline
+            fake = Gst.ElementFactory.make("fakesink", f"fake_{audio_idx}")
+            fake.set_property("sync", False)
+            fake.set_property("async", False)
+            pipeline.add(fake)
+            tee_src = tee.get_request_pad("src_%u")
+            tee_src.link(fake.get_static_pad("sink"))
+            fake.sync_state_with_parent()
+
+        # Conectar el pad de uridecodebin al inicio de la cadena
         pad.link(queue.get_static_pad("sink"))
+
+    def _add_tee_branch(
+        self,
+        pipeline: Gst.Pipeline,
+        tee: Gst.Element,
+        track_idx: int,
+        sink_name: str,
+    ) -> None:
+        """Añade una rama queue→pulsesink al tee de una pista."""
+        safe = _safe_name(sink_name)
+        qb  = Gst.ElementFactory.make("queue",    f"qb_{track_idx}_{safe}")
+        out = Gst.ElementFactory.make("pulsesink", f"out_{safe}")
+        if not qb or not out:
+            return
+        out.set_property("device", sink_name)
+        pipeline.add(qb)
+        pipeline.add(out)
+
+        tee_src = tee.get_request_pad("src_%u")
+        tee_src.link(qb.get_static_pad("sink"))
+        qb.link(out)
+        qb.sync_state_with_parent()
+        out.sync_state_with_parent()
+
+        with self._lock:
+            self._tee_branches[(track_idx, sink_name)] = tee_src
+
+    def _remove_tee_branch(
+        self,
+        pipeline: Gst.Pipeline,
+        tee: Gst.Element,
+        track_idx: int,
+        sink_name: str,
+    ) -> None:
+        """Elimina la rama de un sink del tee (pipeline debe estar en PAUSED)."""
+        safe = _safe_name(sink_name)
+        tee_src = self._tee_branches.pop((track_idx, sink_name), None)
+        qb  = pipeline.get_by_name(f"qb_{track_idx}_{safe}")
+        out = pipeline.get_by_name(f"out_{safe}")
+
+        if tee_src and qb:
+            tee_src.unlink(qb.get_static_pad("sink"))
+            tee.release_request_pad(tee_src)
+        for elem in [qb, out]:
+            if elem:
+                elem.set_state(Gst.State.NULL)
+                pipeline.remove(elem)
 
     def _connect_video_pad_main(self, pad: Gst.Pad) -> bool:
         """
