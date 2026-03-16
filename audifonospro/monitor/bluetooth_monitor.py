@@ -183,9 +183,15 @@ def get_battery_percent(mac: str) -> int | None:
                 break
 
     if output:
-        m = re.search(r"percentage:\s+(\d+)%", output)
-        if m:
-            return int(m.group(1))
+        pct_m = re.search(r"percentage:\s+(\d+)%", output)
+        if pct_m:
+            pct = int(pct_m.group(1))
+            # Si el porcentaje es 0 y el estado es desconocido, el dispositivo
+            # no reporta batería (bocinas sin BAS). Devolver None en ese caso.
+            state_m = re.search(r"state:\s+(\S+)", output)
+            if pct == 0 and state_m and state_m.group(1) in ("unknown", "pending-charge"):
+                return None
+            return pct
 
     return None
 

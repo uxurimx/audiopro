@@ -5,12 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the project
 
 ```bash
-pip install -e .          # install (first time)
-audifonospro              # launch TUI
-python -m audifonospro.main --mode cinema    # cinema mode directly
-make run                  # same as audifonospro
-make install-whisper      # build whisper.cpp (~150MB model)
-make install-piper        # download piper TTS binary
+pip install -e .                              # install (first time)
+audifonospro                                  # launch GTK4 GUI (default)
+audifonospro --ui tui                         # TUI Textual (fallback)
+audifonospro --mode cinema                    # cinema mode
+make run                                      # same as audifonospro
+make install-whisper                          # build whisper.cpp (~150MB model)
+make install-piper                            # download piper TTS binary
 ```
 
 ## Architecture
@@ -65,13 +66,26 @@ audifonospro/
 └── ui/
     ├── app.py          Textual App — 7 tabs, keyboard shortcuts 1-7
     ├── tabs/           One Widget per tab, lazy imports to avoid startup cost
-    └── widgets/        device_card.py — renders AudioDevice as Rich markup
+    ├── widgets/        device_card.py — renders AudioDevice as Rich markup
+    └── gtk/            GTK4 + libadwaita GUI (default)
+        ├── app.py          Adw.Application (id: dev.robit.audifonospro)
+        ├── window.py       MainWindow — Adw.ToolbarView + ViewStack + ToastOverlay
+        ├── widgets/
+        │   └── device_row.py  Adw.ExpanderRow — battery bar, RSSI, profile dropdown, HFP switch
+        └── pages/          One Adw.PreferencesPage per tab
+            ├── devices_page.py    device list, 2s poll, refresh button
+            ├── monitor_page.py    live metrics, 500ms poll, DeviceRow in-place updates
+            ├── controls_page.py   evdev gesture mapper (UI complete, backend Fase 5)
+            ├── eq_page.py         10-band vertical faders + presets (Vocal clarity, Cinema…)
+            ├── translator_page.py pipeline start/stop + STT/trans/TTS status rows
+            ├── stacks_page.py     LOCAL / SWEET_SPOT / CLOUD_PRO / CINEMA selector
+            └── settings_page.py   Adw.PreferencesPage with audio/BT/ANC/STT/UI groups
 ```
 
 ### Key design decisions
 
 - **Python 3.14 compat**: all audio monitoring uses subprocess (not D-Bus Python bindings with C extensions). BLE uses `bleak` (pure Python asyncio).
-- **Thread model**: background polling in daemon threads, results posted to main thread via `post_message()`. Never block Textual's event loop.
+- **Thread model**: background polling in daemon threads. GTK: `GLib.idle_add()` to post back to main thread. Textual: `post_message()`. Never block UI loop.
 - **Device abstraction**: everything (BT, jack, built-in, HDMI) is an `AudioDevice`. Cinema mode and translator use the same device list.
 - **Local-first**: whisper.cpp binary + Ollama (already installed: llama3:8b) + edge-tts = $0/session. OpenAI is optional fallback.
 - **ANC**: JBL hardware ANC controlled via BLE GATT (bleak). Software fallback: noisereduce spectral + adaptive LMS using laptop mic as noise reference.

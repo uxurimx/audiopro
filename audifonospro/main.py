@@ -2,7 +2,8 @@
 Punto de entrada de audifonospro.
 
 Uso:
-    audifonospro              # abre la TUI completa
+    audifonospro                 # abre la GUI GTK4/libadwaita
+    audifonospro --ui tui        # TUI Textual (fallback)
     audifonospro --mode cinema
     audifonospro --mode translate
 """
@@ -10,13 +11,18 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="audifonospro",
         description="Sistema de audio personal multi-dispositivo",
+    )
+    parser.add_argument(
+        "--ui",
+        choices=["gtk", "tui"],
+        default="gtk",
+        help="Interfaz gráfica: gtk (default) o tui (Textual)",
     )
     parser.add_argument(
         "--mode",
@@ -38,7 +44,32 @@ def main() -> None:
         print(f"[ERROR] No se pudo cargar la configuración: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Verificar dependencias críticas
+    if args.ui == "gtk":
+        _launch_gtk(settings)
+    else:
+        _launch_tui(settings, args.mode)
+
+
+def _launch_gtk(settings: object) -> None:
+    try:
+        import gi
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Adw", "1")
+        from gi.repository import Adw  # noqa: F401
+    except (ImportError, ValueError) as exc:
+        print(
+            f"[ERROR] GTK4/libadwaita no disponible: {exc}\n"
+            "Intenta con: audifonospro --ui tui",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from audifonospro.ui.gtk.app import AudiofonosApp
+    app = AudiofonosApp(settings=settings)
+    sys.exit(app.run_app())
+
+
+def _launch_tui(settings: object, mode: str) -> None:
     try:
         from textual.app import App  # noqa: F401
     except ImportError:
@@ -46,7 +77,7 @@ def main() -> None:
         sys.exit(1)
 
     from audifonospro.ui.app import AudiofonosApp
-    app = AudiofonosApp(settings=settings, start_mode=args.mode)
+    app = AudiofonosApp(settings=settings, start_mode=mode)
     app.run()
 
 
