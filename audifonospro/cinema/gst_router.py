@@ -33,19 +33,65 @@ from gi.repository import Gst, GstPbutils, GLib
 Gst.init(None)
 
 
+# Mapa de códigos ISO 639 → nombre en español
+_LANG_NAMES: dict[str, str] = {
+    # ISO 639-1 (2 letras) — lo que GStreamer devuelve normalmente
+    "es": "Español",    "en": "Inglés",     "de": "Alemán",
+    "fr": "Francés",    "it": "Italiano",   "pt": "Portugués",
+    "ja": "Japonés",    "ko": "Coreano",    "zh": "Chino",
+    "ru": "Ruso",       "ar": "Árabe",      "nl": "Holandés",
+    "pl": "Polaco",     "sv": "Sueco",      "tr": "Turco",
+    "hi": "Hindi",      "th": "Tailandés",  "vi": "Vietnamita",
+    "uk": "Ucraniano",  "cs": "Checo",      "hu": "Húngaro",
+    "ro": "Rumano",     "da": "Danés",      "fi": "Finlandés",
+    "nb": "Noruego",    "hr": "Croata",     "bg": "Búlgaro",
+    # ISO 639-2 (3 letras) — fallback
+    "spa": "Español",   "eng": "Inglés",    "deu": "Alemán",
+    "ger": "Alemán",    "fre": "Francés",   "fra": "Francés",
+    "ita": "Italiano",  "por": "Portugués", "jpn": "Japonés",
+    "kor": "Coreano",   "chi": "Chino",     "zho": "Chino",
+    "rus": "Ruso",      "ara": "Árabe",     "dut": "Holandés",
+    "nld": "Holandés",  "pol": "Polaco",    "swe": "Sueco",
+    "tur": "Turco",     "hin": "Hindi",     "tha": "Tailandés",
+    "vie": "Vietnamita","ukr": "Ucraniano", "ces": "Checo",
+    "cze": "Checo",     "hun": "Húngaro",   "ron": "Rumano",
+    "rum": "Rumano",    "dan": "Danés",     "fin": "Finlandés",
+    "nor": "Noruego",   "hrv": "Croata",    "bul": "Búlgaro",
+}
+
+
 @dataclass
 class AudioTrack:
     index: int
     codec: str       = "unknown"
-    language: str    = "und"     # ISO 639-2
+    language: str    = "und"     # ISO 639-1 o 639-2
     channels: int    = 2
     sample_rate: int = 48000
     title: str       = ""        # título de la pista si el MKV lo incluye
 
     @property
+    def language_name(self) -> str:
+        """Nombre del idioma en español, o el código si es desconocido."""
+        return _LANG_NAMES.get(self.language.lower(), self.language.upper()
+                               if self.language not in ("und", "") else "Desconocido")
+
+    @property
+    def channel_label(self) -> str:
+        return {1: "Mono", 2: "Estéreo", 6: "5.1", 8: "7.1"}.get(
+            self.channels, f"{self.channels}ch"
+        )
+
+    @property
     def label(self) -> str:
-        lang = self.language if self.language != "und" else "─"
-        return f"Pista {self.index}  [{lang}]  {self.codec}  {self.channels}ch"
+        """Título amigable: 'Inglés — AAC 5.1' o 'Español (Comentarios) — AC3 Estéreo'."""
+        lang = self.language_name
+        title_part = f" ({self.title})" if self.title else ""
+        codec_short = (self.codec
+                       .replace("MPEG-4 AAC", "AAC")
+                       .replace("Dolby Digital", "AC3")
+                       .replace("DTS", "DTS")
+                       .split(",")[0].strip())
+        return f"{lang}{title_part} — {codec_short} {self.channel_label}"
 
 
 class CinemaRouter:
@@ -120,26 +166,20 @@ class CinemaRouter:
     # ── Reproducción ─────────────────────────────────────────────────────
 
     def prepare_video_sink(self) -> tuple[None, None]:
-        """
-        Obsoleto — gtk4paintablesink reemplazado por autovideosink.
-        Mantenido para compatibilidad de firma con devices_page.
-        """
+        """Obsoleto — el video lo maneja MpvPlayer. Mantiene compatibilidad."""
         return None, None
 
     def play(
         self,
         path: str,
-        show_video: bool = True,
+        show_video: bool = False,   # video lo maneja MpvPlayer externamente
         video_sink: object | None = None,
-    ) -> tuple[bool, object | None]:
+    ) -> tuple[bool, None]:
         """
-        Construye el pipeline y arranca la reproducción.
+        Construye el pipeline de AUDIO y arranca la reproducción.
 
-        Si video_sink es proporcionado (pre-creado desde el hilo GTK),
-        lo añade al pipeline antes de PLAYING — esto es lo correcto para
-        gtk4paintablesink y Wayland.
-
-        Retorna (éxito, paintable_o_None).
+        El video se maneja externamente con MpvPlayer (mpv --no-audio).
+        Este pipeline sólo enruta las pistas de audio a los sinks asignados.
         """
         self.stop()
 
@@ -160,21 +200,10 @@ class CinemaRouter:
         src.set_property("uri", uri)
         pipeline.add(src)
 
-        # ── Video — autovideosink (ventana Wayland nativa) ───────────────────
-        # gtk4paintablesink es inestable en Intel/Wayland (GL context issues).
-        # autovideosink elige el mejor sink disponible (waylandsink, xvimagesink)
-        # y crea su propia ventana — funciona 100% sin configuración.
-        # La cadena se construye dinámicamente en _connect_video_pad_main.
+        # Video: manejado externamente por MpvPlayer. GStreamer solo hace audio.
         self._video_queue: Gst.Element | None = None
         self._video_pipeline_ref = pipeline
         self._video_sink: Gst.Element | None = None
-
-        if show_video:
-            vsink = Gst.ElementFactory.make("autovideosink", "vsink")
-            if vsink:
-                vsink.set_property("sync", True)
-                pipeline.add(vsink)
-                self._video_sink = vsink
 
         # Subtítulos: si hay archivo pre-cargado
         self._sub_pipeline_ready = False

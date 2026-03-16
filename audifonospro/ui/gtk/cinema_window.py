@@ -33,6 +33,7 @@ class CinemaWindow(Adw.Window):
 
         self._on_pause_cb:        callable | None = None
         self._on_stop_cb:         callable | None = None
+        self._on_seek_cb:         callable | None = None  # cb(seconds: float)
         self._seeking             = False
         self._pending_seek: float | None = None   # valor 0–1 acumulado durante drag
         self._timer_id: int       = 0
@@ -210,6 +211,10 @@ class CinemaWindow(Adw.Window):
     def set_on_stop(self, cb: callable) -> None:
         self._on_stop_cb = cb
 
+    def set_on_seek(self, cb: callable) -> None:
+        """cb(seconds: float) — llamado cuando el usuario hace seek."""
+        self._on_seek_cb = cb
+
     def set_playing(self, playing: bool) -> None:
         self._play_btn.set_label("⏸" if playing else "▶")
         self._status_lbl.set_text(
@@ -243,14 +248,16 @@ class CinemaWindow(Adw.Window):
 
     def _end_seek(self) -> None:
         self._seeking = False
-        # Ejecutar el seek una sola vez al soltar el ratón
         val = self._pending_seek
         self._pending_seek = None
         if val is not None:
             from audifonospro.cinema.gst_router import get_router
             dur = get_router().duration_ns
             if dur > 0:
-                get_router().seek_ns(int(max(0.0, min(1.0, val)) * dur))
+                pos_ns = int(max(0.0, min(1.0, val)) * dur)
+                get_router().seek_ns(pos_ns)
+                if self._on_seek_cb:
+                    self._on_seek_cb(pos_ns / GST_SECOND)
 
     def _on_change_value(
         self,
@@ -274,7 +281,10 @@ class CinemaWindow(Adw.Window):
             self._pending_seek = value
         else:
             # Click puntual o teclado: seek inmediato
-            get_router().seek_ns(int(max(0.0, min(1.0, value)) * dur))
+            pos_ns = int(max(0.0, min(1.0, value)) * dur)
+            get_router().seek_ns(pos_ns)
+            if self._on_seek_cb:
+                self._on_seek_cb(pos_ns / GST_SECOND)
         return False  # permitir que el scale actualice su valor visualmente
 
     def _seek_relative(self, seconds: int) -> None:
@@ -282,6 +292,8 @@ class CinemaWindow(Adw.Window):
         router = get_router()
         new_pos = max(0, router.position_ns + seconds * GST_SECOND)
         router.seek_ns(new_pos)
+        if self._on_seek_cb:
+            self._on_seek_cb(new_pos / GST_SECOND)
 
     # ── Callbacks controles ───────────────────────────────────────────────
 

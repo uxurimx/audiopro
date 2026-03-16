@@ -224,6 +224,21 @@ class DevicesPage(Adw.PreferencesPage):
         self._cinema_track_rows: list[Adw.ActionRow] = []
         self._cinema_path: str | None = None
 
+        # MpvPlayer para video (audio → GStreamer, video → mpv)
+        from audifonospro.cinema.mpv_player import MpvPlayer
+        self._mpv = MpvPlayer()
+        _player = MpvPlayer.available()
+        if not _player:
+            _warn = Adw.ActionRow()
+            _warn.set_title("⚠️  Instala mpv para mostrar video")
+            _warn.set_subtitle("sudo dnf install mpv  (solo audio sin mpv)")
+            self._cinema_group.add(_warn)
+        elif _player == "ffplay":
+            _warn = Adw.ActionRow()
+            _warn.set_title("ℹ️  ffplay disponible (seek/pausa no se sincronizan)")
+            _warn.set_subtitle("sudo dnf install mpv  para control completo")
+            self._cinema_group.add(_warn)
+
     # ── Polling ───────────────────────────────────────────────────────────
 
     def _poll_loop(self) -> None:
@@ -376,21 +391,24 @@ class DevicesPage(Adw.PreferencesPage):
         for track in tracks:
             row = Adw.ActionRow()
             row.set_title(track.label)
-            row.set_subtitle(f"{track.sample_rate // 1000}kHz")
+            row.set_subtitle(f"Pista {track.index}  ·  {track.sample_rate // 1000} kHz")
 
             model = Gtk.StringList.new(sink_labels)
             dd = Gtk.DropDown(model=model)
             dd.set_valign(Gtk.Align.CENTER)
-            dd.set_selected(0)
 
-            # Auto-asignar: pista 0 → JBL, pista 1 → FX-313 (si están disponibles)
+            # Conectar la señal ANTES de set_selected para que la auto-asignación
+            # dispare _on_track_sink_selected y llame a router.assign()
+            dd.connect("notify::selected", self._on_track_sink_selected,
+                       track.index, sink_names)
+
+            # Auto-asignar: pista 0 → primer sink disponible, pista 1 → segundo
             if track.index == 0 and len(sink_names) > 1:
                 dd.set_selected(1)
             elif track.index == 1 and len(sink_names) > 2:
                 dd.set_selected(2)
-
-            dd.connect("notify::selected", self._on_track_sink_selected,
-                       track.index, sink_names)
+            else:
+                dd.set_selected(0)
             row.add_suffix(dd)
             row.set_activatable_widget(dd)
             self._cinema_group.add(row)
@@ -414,42 +432,55 @@ class DevicesPage(Adw.PreferencesPage):
                 get_router().clear_assignments()  # simplificación: reset si "Sin audio"
 
     def _get_cinema_window(self):
-        """Crea o reutiliza la ventana flotante de video."""
+        """Crea o reutiliza la ventana de controles de cinema."""
         if not hasattr(self, "_cinema_win") or self._cinema_win is None:
             from audifonospro.ui.gtk.cinema_window import CinemaWindow
             self._cinema_win = CinemaWindow(application=self.get_root().get_application())
             self._cinema_win.set_on_pause(self._on_cinema_pause_from_window)
             self._cinema_win.set_on_stop(self._on_cinema_stop_from_window)
+            self._cinema_win.set_on_seek(self._mpv.seek_to)
         return self._cinema_win
 
     def _on_cinema_play(self, _btn: Gtk.Button) -> None:
         from audifonospro.cinema.gst_router import get_router
         router = get_router()
+
         if router.is_playing:
+            # Pausar ambos (GStreamer + mpv)
             router.pause()
+            self._mpv.set_pause(True)
             self._cinema_play_btn.set_label("▶  Reanudar")
             if hasattr(self, "_cinema_win") and self._cinema_win:
                 self._cinema_win.set_playing(False)
-        else:
-            if self._cinema_path:
+        elif self._cinema_path:
+            # Reanudar (si el pipeline ya existe pero está pausado)
+            state = router._pipeline.get_state(0).state if router._pipeline else None
+            import gi; gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+            if state == Gst.State.PAUSED:
+                router.pause()   # toggle → PLAYING
+                self._mpv.set_pause(False)
+                self._cinema_play_btn.set_label("⏸  Pausar")
+                if hasattr(self, "_cinema_win") and self._cinema_win:
+                    self._cinema_win.set_playing(True)
+            else:
+                # Arranque inicial
                 router.set_on_eos(self._on_cinema_eos)
                 router.set_on_error(self._on_cinema_error)
 
-                # PASO 1: Pre-crear el sink y mostrar la ventana ANTES de PLAYING
-                # Esto garantiza que gtk4paintablesink esté realizado en GTK
-                # antes de que llegue el primer frame de video.
                 win = self._get_cinema_window()
                 win.set_file(self._cinema_path)
-                vsink, paintable = router.prepare_video_sink()
-                if paintable:
-                    win.attach_paintable(paintable)
-                win.present()   # ← ventana visible ANTES de iniciar pipeline
+                win.present()
 
-                # PASO 2: Iniciar el pipeline con el sink ya pre-creado
-                ok, _ = router.play(
-                    self._cinema_path, show_video=True, video_sink=vsink
-                )
+                # Audio: GStreamer (multi-track routing)
+                ok, _ = router.play(self._cinema_path, show_video=False)
                 if ok:
+                    # Video: mpv --no-audio (ventana Wayland nativa, sin drift)
+                    threading.Thread(
+                        target=self._mpv.play,
+                        args=(self._cinema_path,),
+                        daemon=True,
+                    ).start()
                     self._cinema_play_btn.set_label("⏸  Pausar")
                     win.set_playing(True)
                 else:
@@ -457,32 +488,36 @@ class DevicesPage(Adw.PreferencesPage):
                         "Asigna al menos una pista antes de reproducir"
                     )
 
-    def _on_cinema_stop(self, _btn: Gtk.Button) -> None:
+    def _on_cinema_stop(self, _btn: object) -> None:
         from audifonospro.cinema.gst_router import get_router
         get_router().stop()
+        self._mpv.stop()
         self._cinema_play_btn.set_label("▶  Reproducir")
         if hasattr(self, "_cinema_win") and self._cinema_win:
             self._cinema_win.set_visible(False)
+            self._cinema_win.set_playing(False)
 
     def _on_cinema_pause_from_window(self) -> None:
-        """Callback desde la ventana de video (click/Space)."""
+        """Space/click en ventana de controles → sincroniza GStreamer + mpv."""
         from audifonospro.cinema.gst_router import get_router
         router = get_router()
         router.pause()
         is_playing = router.is_playing
+        self._mpv.set_pause(not is_playing)
         self._cinema_play_btn.set_label("⏸  Pausar" if is_playing else "▶  Reanudar")
         if hasattr(self, "_cinema_win") and self._cinema_win:
             self._cinema_win.set_playing(is_playing)
 
     def _on_cinema_stop_from_window(self) -> None:
-        """Callback desde el botón Detener de la ventana de video."""
         self._on_cinema_stop(None)
 
     def _on_cinema_eos(self) -> None:
+        self._mpv.stop()
         self._cinema_play_btn.set_label("▶  Reproducir")
         self._cinema_ctrl_row.set_subtitle("Reproducción finalizada")
         if hasattr(self, "_cinema_win") and self._cinema_win:
             self._cinema_win.set_visible(False)
+            self._cinema_win.set_playing(False)
 
     def _on_cinema_error(self, msg: str) -> None:
         self._cinema_play_btn.set_label("▶  Reproducir")
