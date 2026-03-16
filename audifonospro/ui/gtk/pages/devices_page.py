@@ -243,6 +243,22 @@ class DevicesPage(Adw.PreferencesPage):
             GLib.idle_add(self._refresh_rows, devices)
             GLib.idle_add(self._refresh_streams, inputs, sinks)
             GLib.idle_add(self._refresh_volumes, sinks)
+
+            # Actualizar status.json para la extensión GNOME
+            try:
+                from audifonospro.dbus.status_writer import write_status
+                write_status(devices=[
+                    {
+                        "name":        d.name,
+                        "battery_pct": getattr(d, "battery_level", None),
+                        "codec":       getattr(d, "codec", None),
+                        "connected":   getattr(d, "connected", True),
+                    }
+                    for d in devices
+                ])
+            except Exception:
+                pass
+
             time.sleep(2.0)
 
     def _refresh_rows(self, devices: list) -> bool:
