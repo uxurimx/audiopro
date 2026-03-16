@@ -37,6 +37,7 @@ def list_sinks() -> list[dict]:
       name        : str   — nombre técnico (ej. bluez_output.B4:84:...)
       description : str   — nombre legible (ej. JBL VIBE BUDS)
       state       : str   — RUNNING | SUSPENDED | IDLE
+      volume      : int   — volumen actual 0–100
     """
     output = _run(["pactl", "list", "sinks"])
     sinks: list[dict] = []
@@ -48,13 +49,18 @@ def list_sinks() -> list[dict]:
         if m_id:
             if current:
                 sinks.append(current)
-            current = {"id": int(m_id.group(1)), "name": "", "description": "", "state": ""}
+            current = {"id": int(m_id.group(1)), "name": "", "description": "",
+                       "state": "", "volume": 50}
             continue
         if current:
             if line_s.startswith("Name:"):
                 current["name"] = line_s.split(":", 1)[1].strip()
             elif line_s.startswith("State:"):
                 current["state"] = line_s.split(":", 1)[1].strip()
+            elif line_s.startswith("Volume:"):
+                m = re.search(r"(\d+)%", line_s)
+                if m:
+                    current["volume"] = int(m.group(1))
             elif line_s.startswith("Description:"):
                 current["description"] = line_s.split(":", 1)[1].strip()
 
@@ -205,5 +211,36 @@ def smart_route_stream(stream_serial: int, target_sink_name: str) -> tuple[bool,
     # Paso 2 (complementario): intentar mover el stream directamente
     # Falla silenciosamente para streams en easyeffects (esperable)
     move_stream_to_sink(stream_serial, target_sink_name)
+
+    return ok, msg
+
+
+# ── Control de volumen por sink ───────────────────────────────────────────────
+
+def get_sink_volume(sink_name: str) -> int:
+    """Devuelve el volumen actual del sink (0–100)."""
+    output = _run(["pactl", "get-sink-volume", sink_name])
+    m = re.search(r"(\d+)%", output)
+    return int(m.group(1)) if m else 50
+
+
+def set_sink_volume(sink_name: str, percent: int) -> tuple[bool, str]:
+    """
+    Ajusta el volumen de un sink específico (0–150%).
+
+    Ejemplo:
+        set_sink_volume("bluez_output.12:11:57:94:4D:A7", 75)
+    """
+    pct = max(0, min(150, int(percent)))
+    try:
+        r = subprocess.run(
+            ["pactl", "set-sink-volume", sink_name, f"{pct}%"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return True, f"{sink_name} → {pct}%"
+        return False, r.stderr.strip() or "Error"
+    except Exception as exc:
+        return False, str(exc)
 
     return ok, msg

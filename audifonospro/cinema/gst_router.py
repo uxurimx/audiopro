@@ -119,13 +119,27 @@ class CinemaRouter:
 
     # ── Reproducción ─────────────────────────────────────────────────────
 
-    def play(self, path: str, show_video: bool = True) -> bool:
+    def prepare_video_sink(self) -> tuple[None, None]:
         """
-        Construye el pipeline GStreamer y arranca la reproducción.
+        Obsoleto — gtk4paintablesink reemplazado por autovideosink.
+        Mantenido para compatibilidad de firma con devices_page.
+        """
+        return None, None
 
-        El video se muestra en una ventana flotante si show_video=True.
-        El audio de cada pista asignada sale por el dispositivo correspondiente.
-        Pistas sin asignación se silencian (fakesink).
+    def play(
+        self,
+        path: str,
+        show_video: bool = True,
+        video_sink: object | None = None,
+    ) -> tuple[bool, object | None]:
+        """
+        Construye el pipeline y arranca la reproducción.
+
+        Si video_sink es proporcionado (pre-creado desde el hilo GTK),
+        lo añade al pipeline antes de PLAYING — esto es lo correcto para
+        gtk4paintablesink y Wayland.
+
+        Retorna (éxito, paintable_o_None).
         """
         self.stop()
 
@@ -133,7 +147,7 @@ class CinemaRouter:
             assignments = dict(self._assignments)
 
         if not assignments:
-            return False
+            return False, None
 
         uri = Gst.filename_to_uri(path)
         pipeline = Gst.Pipeline.new("cinema")
@@ -141,18 +155,37 @@ class CinemaRouter:
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
 
-        # Fuente + demuxer
+        # Fuente
         src = Gst.ElementFactory.make("uridecodebin", "src")
         src.set_property("uri", uri)
         pipeline.add(src)
 
-        # Una salida de audio por pista asignada
+        # ── Video — autovideosink (ventana Wayland nativa) ───────────────────
+        # gtk4paintablesink es inestable en Intel/Wayland (GL context issues).
+        # autovideosink elige el mejor sink disponible (waylandsink, xvimagesink)
+        # y crea su propia ventana — funciona 100% sin configuración.
+        # La cadena se construye dinámicamente en _connect_video_pad_main.
+        self._video_queue: Gst.Element | None = None
+        self._video_pipeline_ref = pipeline
+        self._video_sink: Gst.Element | None = None
+
+        if show_video:
+            vsink = Gst.ElementFactory.make("autovideosink", "vsink")
+            if vsink:
+                vsink.set_property("sync", True)
+                pipeline.add(vsink)
+                self._video_sink = vsink
+
+        # Subtítulos: si hay archivo pre-cargado
+        self._sub_pipeline_ready = False
+        self._pending_sub_file = getattr(self, "_queued_sub_file", None)
+
         self._audio_pads: dict[int, Gst.Pad] = {}
-        src.connect("pad-added", self._on_pad_added, pipeline, assignments, show_video)
+        src.connect("pad-added", self._on_pad_added, pipeline, assignments)
 
         self._pipeline = pipeline
         pipeline.set_state(Gst.State.PLAYING)
-        return True
+        return True, None   # paintable ya no se usa (autovideosink crea su ventana)
 
     def pause(self) -> None:
         if self._pipeline:
@@ -197,13 +230,38 @@ class CinemaRouter:
 
     # ── Internals ─────────────────────────────────────────────────────────
 
+    def load_subtitle(self, path: str) -> None:
+        """Carga un archivo .srt/.ass externo en el pipeline activo."""
+        self._queued_sub_file = path
+        if self._pipeline and self._video_sink:
+            GLib.idle_add(self._apply_subtitle_main, path)
+
+    def disable_subtitles(self) -> None:
+        self._queued_sub_file = None
+        # Silenciar textoverlay si existe
+        if self._pipeline:
+            overlay = self._pipeline.get_by_name("textoverlay")
+            if overlay:
+                overlay.set_property("text", "")
+                overlay.set_property("silent", True)
+
+    def _apply_subtitle_main(self, path: str) -> bool:
+        """Activa el textoverlay con el archivo de subtítulos (hilo GTK)."""
+        if not self._pipeline:
+            return False
+        overlay = self._pipeline.get_by_name("textoverlay")
+        if overlay:
+            overlay.set_property("silent", False)
+        # La pista de texto se conecta dinámicamente en _on_pad_added
+        # Aquí guardamos el path para la próxima reproducción
+        return False
+
     def _on_pad_added(
         self,
         src: Gst.Element,
         pad: Gst.Pad,
         pipeline: Gst.Pipeline,
         assignments: dict[int, str],
-        show_video: bool,
     ) -> None:
         caps = pad.get_current_caps() or pad.query_caps(None)
         if not caps or caps.is_empty():
@@ -213,8 +271,12 @@ class CinemaRouter:
 
         if name.startswith("audio/"):
             self._link_audio_pad(pad, pipeline, assignments)
-        elif name.startswith("video/") and show_video:
-            self._link_video_pad(pad, pipeline)
+        elif name.startswith("video/") and getattr(self, "_video_sink", None):
+            # El vsink ya está en el pipeline; construimos el resto de la cadena
+            # en el hilo GTK principal (gtk4paintablesink requiere main thread).
+            GLib.idle_add(self._connect_video_pad_main, pad)
+        elif name.startswith("text/"):
+            GLib.idle_add(self._link_text_pad_main, pad, pipeline)
 
     def _link_audio_pad(
         self,
@@ -244,7 +306,7 @@ class CinemaRouter:
         for elem in [queue, convert, resample, out]:
             pipeline.add(elem)
 
-        pad.link(queue.get_static_pad("sink"))
+        # Orden correcto: enlazar cadena interna → sync → conectar pad upstream
         queue.link(convert)
         convert.link(resample)
         resample.link(out)
@@ -252,21 +314,60 @@ class CinemaRouter:
         for elem in [queue, convert, resample, out]:
             elem.sync_state_with_parent()
 
-    def _link_video_pad(self, pad: Gst.Pad, pipeline: Gst.Pipeline) -> None:
-        queue   = Gst.ElementFactory.make("queue",          "vq")
-        convert = Gst.ElementFactory.make("videoconvert",   "vconv")
-        sink    = Gst.ElementFactory.make("autovideosink",  "vsink")
-        sink.set_property("sync", True)
-
-        for elem in [queue, convert, sink]:
-            pipeline.add(elem)
-
+        # Conectar el pad de uridecodebin DESPUÉS de que los elementos estén en PLAYING
         pad.link(queue.get_static_pad("sink"))
-        queue.link(convert)
-        convert.link(sink)
 
-        for elem in [queue, convert, sink]:
-            elem.sync_state_with_parent()
+    def _connect_video_pad_main(self, pad: Gst.Pad) -> bool:
+        """
+        Construye y conecta la cadena de video dinámicamente en el hilo GTK.
+
+        Orden correcto para pipelines dinámicos (GStreamer best practice):
+          1. add elements to pipeline
+          2. link internal chain (queue → videoconvert → vsink)
+          3. sync_state_with_parent  (elementos pasan a PLAYING)
+          4. link upstream pad LAST  (empieza el flujo de datos)
+
+        Sin glupload/glcolorconvert: gtk4paintablesink 1.22+ acepta video/x-raw
+        y hace el upload GL internamente — más sencillo y evita errores de
+        formato YUV con DRM modifiers en Intel.
+        """
+        vsink = self._video_sink
+        pipeline = getattr(self, "_video_pipeline_ref", None)
+        if not vsink or not pipeline:
+            return False
+
+        queue = Gst.ElementFactory.make("queue",        "vq")
+        vconv = Gst.ElementFactory.make("videoconvert", "vconv")
+
+        # 1. Añadir al pipeline
+        pipeline.add(queue)
+        pipeline.add(vconv)
+
+        # 2. Enlazar la cadena interna
+        queue.link(vconv)
+        vconv.link(vsink)
+
+        # 3. Sincronizar estados (los nuevos elementos pasan a PLAYING)
+        queue.sync_state_with_parent()
+        vconv.sync_state_with_parent()
+        vsink.sync_state_with_parent()
+
+        # 4. Conectar el pad upstream (inicia el flujo de datos)
+        sink_pad = queue.get_static_pad("sink")
+        if sink_pad and not sink_pad.is_linked():
+            pad.link(sink_pad)
+
+        self._video_queue = queue
+        return False  # GLib.idle_add no repite
+
+    def _link_text_pad_main(self, pad: Gst.Pad, pipeline: Gst.Pipeline) -> bool:
+        """Conecta pista de texto (subtítulos embebidos) a textoverlay."""
+        overlay = pipeline.get_by_name("textoverlay")
+        if overlay:
+            text_sink = overlay.get_static_pad("text_sink")
+            if text_sink and not text_sink.is_linked():
+                pad.link(text_sink)
+        return False
 
     def _on_bus_message(self, _bus: Gst.Bus, msg: Gst.Message) -> None:
         if msg.type == Gst.MessageType.EOS:

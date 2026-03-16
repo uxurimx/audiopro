@@ -41,7 +41,16 @@ class DevicesPage(Adw.PreferencesPage):
         self._empty_row.set_title("Escaneando dispositivos…")
         self._dev_group.add(self._empty_row)
 
-        # ── Sección 2: Streams activos ────────────────────────────────────
+        # ── Sección 2: Volumen por dispositivo ───────────────────────────────
+        self._vol_group = Adw.PreferencesGroup()
+        self._vol_group.set_title("Volumen")
+        self._vol_group.set_description(
+            "Control independiente del volumen de cada dispositivo de salida"
+        )
+        self.add(self._vol_group)
+        self._vol_rows: dict[str, _VolumeRow] = {}   # sink_name → widget
+
+        # ── Sección 3: Streams activos ────────────────────────────────────
         self._stream_group = Adw.PreferencesGroup()
         self._stream_group.set_title("Streams activos")
         self._stream_group.set_description(
@@ -55,7 +64,21 @@ class DevicesPage(Adw.PreferencesPage):
         self._no_streams_row.set_subtitle("No hay aplicaciones reproduciendo audio")
         self._stream_group.add(self._no_streams_row)
 
-        # ── Sección 3: Cinema / MKV ───────────────────────────────────────
+        # ── Sección 3: Bluetooth Manager ──────────────────────────────────
+        self._bt_group = Adw.PreferencesGroup()
+        self._bt_group.set_title("Bluetooth")
+        self._bt_group.set_description(
+            "Conecta, desconecta o empareja dispositivos sin salir de la app"
+        )
+        self._bt_group.set_header_suffix(self._build_bt_toolbar())
+        self.add(self._bt_group)
+        self._bt_rows: dict[str, _BTRow] = {}    # mac → widget
+        self._bt_status_row = Adw.ActionRow()
+        self._bt_status_row.set_title("Dispositivos emparejados")
+        self._bt_status_row.set_subtitle("Usa 'Escanear' para buscar nuevos")
+        self._bt_group.add(self._bt_status_row)
+
+        # ── Sección 4: Cinema / MKV ───────────────────────────────────────
         self._cinema_group = Adw.PreferencesGroup()
         self._cinema_group.set_title("Cinema — abrir archivo")
         self._cinema_group.set_description(
@@ -66,6 +89,25 @@ class DevicesPage(Adw.PreferencesPage):
 
         # Arrancar polling
         threading.Thread(target=self._poll_loop, daemon=True).start()
+        # Cargar dispositivos BT al inicio
+        threading.Thread(target=self._load_bt_devices, daemon=True).start()
+
+    # ── Bluetooth toolbar ─────────────────────────────────────────────────
+
+    def _build_bt_toolbar(self) -> Gtk.Box:
+        box = Gtk.Box(spacing=4)
+
+        self._bt_scan_btn = Gtk.Button(label="Escanear")
+        self._bt_scan_btn.add_css_class("flat")
+        self._bt_scan_btn.set_icon_name("bluetooth-symbolic")
+        self._bt_scan_btn.connect("clicked", self._on_bt_scan)
+        box.append(self._bt_scan_btn)
+
+        self._bt_spinner = Gtk.Spinner()
+        self._bt_spinner.set_visible(False)
+        box.append(self._bt_spinner)
+
+        return box
 
     # ── Botón refresh ─────────────────────────────────────────────────────
 
@@ -76,6 +118,67 @@ class DevicesPage(Adw.PreferencesPage):
         btn.add_css_class("flat")
         btn.connect("clicked", self._on_refresh)
         return btn
+
+    # ── Bluetooth helpers ─────────────────────────────────────────────────
+
+    def _load_bt_devices(self) -> None:
+        """Carga la lista de dispositivos emparejados al arrancar."""
+        try:
+            from audifonospro.monitor.bt_manager import list_paired
+            devices = list_paired()
+        except Exception:
+            devices = []
+        GLib.idle_add(self._refresh_bt_rows, devices)
+
+    def _on_bt_scan(self, _btn: Gtk.Button) -> None:
+        self._bt_scan_btn.set_sensitive(False)
+        self._bt_spinner.set_visible(True)
+        self._bt_spinner.start()
+        self._bt_status_row.set_subtitle("Escaneando 8 segundos…")
+        threading.Thread(target=self._do_bt_scan, daemon=True).start()
+
+    def _do_bt_scan(self) -> None:
+        try:
+            from audifonospro.monitor.bt_manager import scan
+            devices = scan(timeout=8, on_device_found=lambda d: GLib.idle_add(
+                self._add_bt_row_if_new, d
+            ))
+        except Exception:
+            devices = []
+        GLib.idle_add(self._on_bt_scan_done, devices)
+
+    def _on_bt_scan_done(self, devices: list) -> bool:
+        self._bt_spinner.stop()
+        self._bt_spinner.set_visible(False)
+        self._bt_scan_btn.set_sensitive(True)
+        self._refresh_bt_rows(devices)
+        self._bt_status_row.set_subtitle(f"{len(devices)} dispositivo(s) encontrado(s)")
+        return False
+
+    def _add_bt_row_if_new(self, device: object) -> bool:
+        """Añade una fila BT en tiempo real durante el escaneo."""
+        mac = device.mac
+        if mac not in self._bt_rows:
+            row = _BTRow(device)
+            self._bt_rows[mac] = row
+            self._bt_group.add(row)
+        return False
+
+    def _refresh_bt_rows(self, devices: list) -> bool:
+        seen: set[str] = set()
+        for dev in devices:
+            seen.add(dev.mac)
+            if dev.mac in self._bt_rows:
+                self._bt_rows[dev.mac].update_device(dev)
+            else:
+                row = _BTRow(dev)
+                self._bt_rows[dev.mac] = row
+                self._bt_group.add(row)
+
+        for mac in set(self._bt_rows.keys()) - seen:
+            self._bt_group.remove(self._bt_rows.pop(mac))
+
+        return False
 
     def _build_cinema_row(self) -> None:
         # Fila: selector de archivo
@@ -141,6 +244,7 @@ class DevicesPage(Adw.PreferencesPage):
 
             GLib.idle_add(self._refresh_rows, devices)
             GLib.idle_add(self._refresh_streams, inputs, sinks)
+            GLib.idle_add(self._refresh_volumes, sinks)
             time.sleep(2.0)
 
     def _refresh_rows(self, devices: list) -> bool:
@@ -160,6 +264,25 @@ class DevicesPage(Adw.PreferencesPage):
 
         for dev_id in set(self._rows.keys()) - seen_ids:
             self._dev_group.remove(self._rows.pop(dev_id))
+
+        return False
+
+    def _refresh_volumes(self, sinks: list[dict]) -> bool:
+        seen: set[str] = set()
+        for sink in sinks:
+            name = sink["name"]
+            seen.add(name)
+            label = sink.get("description") or name
+            vol   = sink.get("volume", 50)
+            if name in self._vol_rows:
+                self._vol_rows[name].update_volume(vol)
+            else:
+                row = _VolumeRow(name, label, vol)
+                self._vol_rows[name] = row
+                self._vol_group.add(row)
+
+        for name in set(self._vol_rows.keys()) - seen:
+            self._vol_group.remove(self._vol_rows.pop(name))
 
         return False
 
@@ -290,30 +413,76 @@ class DevicesPage(Adw.PreferencesPage):
             else:
                 get_router().clear_assignments()  # simplificación: reset si "Sin audio"
 
+    def _get_cinema_window(self):
+        """Crea o reutiliza la ventana flotante de video."""
+        if not hasattr(self, "_cinema_win") or self._cinema_win is None:
+            from audifonospro.ui.gtk.cinema_window import CinemaWindow
+            self._cinema_win = CinemaWindow(application=self.get_root().get_application())
+            self._cinema_win.set_on_pause(self._on_cinema_pause_from_window)
+            self._cinema_win.set_on_stop(self._on_cinema_stop_from_window)
+        return self._cinema_win
+
     def _on_cinema_play(self, _btn: Gtk.Button) -> None:
         from audifonospro.cinema.gst_router import get_router
         router = get_router()
         if router.is_playing:
             router.pause()
             self._cinema_play_btn.set_label("▶  Reanudar")
+            if hasattr(self, "_cinema_win") and self._cinema_win:
+                self._cinema_win.set_playing(False)
         else:
             if self._cinema_path:
                 router.set_on_eos(self._on_cinema_eos)
                 router.set_on_error(self._on_cinema_error)
-                ok = router.play(self._cinema_path, show_video=True)
+
+                # PASO 1: Pre-crear el sink y mostrar la ventana ANTES de PLAYING
+                # Esto garantiza que gtk4paintablesink esté realizado en GTK
+                # antes de que llegue el primer frame de video.
+                win = self._get_cinema_window()
+                win.set_file(self._cinema_path)
+                vsink, paintable = router.prepare_video_sink()
+                if paintable:
+                    win.attach_paintable(paintable)
+                win.present()   # ← ventana visible ANTES de iniciar pipeline
+
+                # PASO 2: Iniciar el pipeline con el sink ya pre-creado
+                ok, _ = router.play(
+                    self._cinema_path, show_video=True, video_sink=vsink
+                )
                 if ok:
                     self._cinema_play_btn.set_label("⏸  Pausar")
+                    win.set_playing(True)
                 else:
-                    self._cinema_ctrl_row.set_subtitle("Asigna al menos una pista antes de reproducir")
+                    self._cinema_ctrl_row.set_subtitle(
+                        "Asigna al menos una pista antes de reproducir"
+                    )
 
     def _on_cinema_stop(self, _btn: Gtk.Button) -> None:
         from audifonospro.cinema.gst_router import get_router
         get_router().stop()
         self._cinema_play_btn.set_label("▶  Reproducir")
+        if hasattr(self, "_cinema_win") and self._cinema_win:
+            self._cinema_win.set_visible(False)
+
+    def _on_cinema_pause_from_window(self) -> None:
+        """Callback desde la ventana de video (click/Space)."""
+        from audifonospro.cinema.gst_router import get_router
+        router = get_router()
+        router.pause()
+        is_playing = router.is_playing
+        self._cinema_play_btn.set_label("⏸  Pausar" if is_playing else "▶  Reanudar")
+        if hasattr(self, "_cinema_win") and self._cinema_win:
+            self._cinema_win.set_playing(is_playing)
+
+    def _on_cinema_stop_from_window(self) -> None:
+        """Callback desde el botón Detener de la ventana de video."""
+        self._on_cinema_stop(None)
 
     def _on_cinema_eos(self) -> None:
         self._cinema_play_btn.set_label("▶  Reproducir")
         self._cinema_ctrl_row.set_subtitle("Reproducción finalizada")
+        if hasattr(self, "_cinema_win") and self._cinema_win:
+            self._cinema_win.set_visible(False)
 
     def _on_cinema_error(self, msg: str) -> None:
         self._cinema_play_btn.set_label("▶  Reproducir")
@@ -418,3 +587,174 @@ class _StreamRow(Adw.ActionRow):
         """
         from audifonospro.audio.routing import smart_route_stream
         smart_route_stream(serial, sink_name)
+
+
+# ── Widget de fila para un dispositivo BT ─────────────────────────────────────
+
+class _BTRow(Adw.ActionRow):
+    """Fila para un dispositivo Bluetooth con botones conectar/desconectar."""
+
+    def __init__(self, device: object) -> None:
+        super().__init__()
+        self._mac = device.mac
+        self._updating = False
+
+        self.set_title(device.name)
+        self.set_subtitle(device.mac)
+
+        box = Gtk.Box(spacing=6)
+        box.set_valign(Gtk.Align.CENTER)
+
+        self._connect_btn = Gtk.Button(label="Conectar")
+        self._connect_btn.add_css_class("suggested-action")
+        self._connect_btn.connect("clicked", self._on_connect)
+        box.append(self._connect_btn)
+
+        self._disconnect_btn = Gtk.Button(label="Desconectar")
+        self._disconnect_btn.add_css_class("destructive-action")
+        self._disconnect_btn.connect("clicked", self._on_disconnect)
+        box.append(self._disconnect_btn)
+
+        self._status_lbl = Gtk.Label()
+        self._status_lbl.add_css_class("dim-label")
+        self._status_lbl.add_css_class("caption")
+        box.append(self._status_lbl)
+
+        self.add_suffix(box)
+        self._apply_state(device)
+
+    def update_device(self, device: object) -> None:
+        self.set_title(device.name)
+        self._apply_state(device)
+
+    def _apply_state(self, device: object) -> None:
+        connected = getattr(device, "connected", False)
+        paired    = getattr(device, "paired", True)
+        self._connect_btn.set_sensitive(not connected)
+        self._disconnect_btn.set_sensitive(connected)
+        if connected:
+            self.set_icon_name("bluetooth-active-symbolic")
+            self._status_lbl.set_text("conectado")
+        elif paired:
+            self.set_icon_name("bluetooth-symbolic")
+            self._status_lbl.set_text("emparejado")
+        else:
+            self.set_icon_name("bluetooth-disabled-symbolic")
+            self._status_lbl.set_text("no emparejado")
+
+    def _on_connect(self, _btn: Gtk.Button) -> None:
+        self._connect_btn.set_sensitive(False)
+        self._status_lbl.set_text("conectando…")
+        threading.Thread(target=self._do_action, args=("connect",), daemon=True).start()
+
+    def _on_disconnect(self, _btn: Gtk.Button) -> None:
+        self._disconnect_btn.set_sensitive(False)
+        self._status_lbl.set_text("desconectando…")
+        threading.Thread(target=self._do_action, args=("disconnect",), daemon=True).start()
+
+    def _do_action(self, action: str) -> None:
+        from audifonospro.monitor.bt_manager import connect, disconnect, _get_device_props
+        if action == "connect":
+            connect(self._mac)
+        else:
+            disconnect(self._mac)
+        connected, _ = _get_device_props(self._mac)
+        GLib.idle_add(self._on_action_done, connected)
+
+    def _on_action_done(self, connected: bool) -> bool:
+        self._connect_btn.set_sensitive(not connected)
+        self._disconnect_btn.set_sensitive(connected)
+        self._status_lbl.set_text("conectado" if connected else "emparejado")
+        if connected:
+            self.set_icon_name("bluetooth-active-symbolic")
+        else:
+            self.set_icon_name("bluetooth-symbolic")
+        return False
+
+
+# ── Widget de fila de volumen ─────────────────────────────────────────────────
+
+class _VolumeRow(Adw.ActionRow):
+    """Slider de volumen para un sink de PulseAudio/PipeWire."""
+
+    def __init__(self, sink_name: str, label: str, volume: int) -> None:
+        super().__init__()
+        self._sink_name = sink_name
+        self._dragging  = False
+
+        self.set_title(label)
+        self.set_subtitle(sink_name)
+        self.set_icon_name("audio-volume-high-symbolic")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_size_request(260, -1)
+
+        self._slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        self._slider.set_range(0, 100)
+        self._slider.set_draw_value(False)
+        self._slider.set_hexpand(True)
+        self._slider.set_size_request(180, -1)
+        self._slider.connect("change-value", self._on_change_value)
+
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", lambda *_: setattr(self, "_dragging", True))
+        drag.connect("drag-end",   self._on_drag_end)
+        self._slider.add_controller(drag)
+
+        self._pct_label = Gtk.Label()
+        self._pct_label.add_css_class("numeric")
+        self._pct_label.add_css_class("dim-label")
+        self._pct_label.set_width_chars(4)
+
+        box.append(self._slider)
+        box.append(self._pct_label)
+        self.add_suffix(box)
+
+        self._set_slider(volume)
+
+    def update_volume(self, volume: int) -> None:
+        """Actualiza el slider desde el polling — solo si el usuario no está arrastrando."""
+        if not self._dragging:
+            self._set_slider(volume)
+
+    def _set_slider(self, volume: int) -> None:
+        self._slider.handler_block_by_func(self._on_change_value)
+        self._slider.set_value(volume)
+        self._slider.handler_unblock_by_func(self._on_change_value)
+        self._pct_label.set_text(f"{volume}%")
+        self._update_icon(volume)
+
+    def _update_icon(self, volume: int) -> None:
+        if volume == 0:
+            self.set_icon_name("audio-volume-muted-symbolic")
+        elif volume < 40:
+            self.set_icon_name("audio-volume-low-symbolic")
+        elif volume < 75:
+            self.set_icon_name("audio-volume-medium-symbolic")
+        else:
+            self.set_icon_name("audio-volume-high-symbolic")
+
+    def _on_change_value(
+        self, _scale: Gtk.Scale, _scroll: object, value: float
+    ) -> bool:
+        pct = int(max(0, min(100, value)))
+        self._pct_label.set_text(f"{pct}%")
+        self._update_icon(pct)
+        if not self._dragging:
+            # Click puntual: aplicar inmediatamente
+            threading.Thread(
+                target=self._apply_volume, args=(pct,), daemon=True
+            ).start()
+        return False
+
+    def _on_drag_end(self, *_: object) -> None:
+        self._dragging = False
+        pct = int(self._slider.get_value())
+        threading.Thread(
+            target=self._apply_volume, args=(pct,), daemon=True
+        ).start()
+
+    def _apply_volume(self, percent: int) -> None:
+        from audifonospro.audio.routing import set_sink_volume
+        set_sink_volume(self._sink_name, percent)
