@@ -182,6 +182,60 @@ def move_all_streams_to_sink(sink_name: str) -> list[tuple[int, bool]]:
     return results
 
 
+def pin_stream_to_sink(stream_serial: int, sink_name: str) -> tuple[bool, str]:
+    """
+    Pinea un stream a un sink vía pw-metadata target.object.
+
+    WirePlumber detecta el cambio en la metadata 'default', lo guarda en su
+    state file (~/.local/state/wireplumber/) y lo restaura la próxima vez que
+    la app abra. También evita que WirePlumber mueva el stream cuando cambia
+    el default sink (incluso con linking.follow-default-target=true).
+
+    Flujo:
+      1. pw-dump → encontrar PW node-id del stream (por pulse.id == serial)
+                   y object.serial del sink (por node.name)
+      2. pw-metadata <node-id> target.object <sink-serial>
+    """
+    import json
+
+    try:
+        nodes = json.loads(_run(["pw-dump"]))
+    except Exception as exc:
+        return False, f"pw-dump: {exc}"
+
+    stream_node = next(
+        (n for n in nodes
+         if n.get("info", {}).get("props", {}).get("pulse.id") == stream_serial),
+        None,
+    )
+    sink_node = next(
+        (n for n in nodes
+         if n.get("info", {}).get("props", {}).get("node.name") == sink_name
+         and "Sink" in n.get("info", {}).get("props", {}).get("media.class", "")),
+        None,
+    )
+
+    if not stream_node:
+        return False, f"stream {stream_serial} no encontrado en pw-dump"
+    if not sink_node:
+        return False, f"sink '{sink_name}' no encontrado en pw-dump"
+
+    node_id    = stream_node["id"]
+    sink_serial = (sink_node.get("info", {}).get("props", {})
+                   .get("object.serial", sink_node["id"]))
+
+    try:
+        r = subprocess.run(
+            ["pw-metadata", str(node_id), "target.object", str(sink_serial)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return True, f"stream {stream_serial} pineado a {sink_name}"
+        return False, r.stderr.strip() or "pw-metadata error"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def get_sink_name_for_mac(mac: str) -> str | None:
     """Busca el nombre del sink de PipeWire para una MAC BT dada."""
     for sink in list_sinks():

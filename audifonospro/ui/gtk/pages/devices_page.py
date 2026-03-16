@@ -346,7 +346,7 @@ class _StreamRow(Adw.ActionRow):
         self._user_moved = False   # True cuando el usuario hizo una selección manual
 
         self.set_title(inp["app_name"])
-        self.set_icon_name("multimedia-player-symbolic")
+        self.set_icon_name(inp.get("app_icon") or "multimedia-player-symbolic")
 
         # Dropdown de sinks destino
         self._sink_names = [s["name"] for s in sinks]
@@ -372,6 +372,8 @@ class _StreamRow(Adw.ActionRow):
         """Actualiza datos del stream. NO resetea el dropdown si el usuario acaba de mover."""
         self._updating = True
         self.set_title(inp["app_name"])
+        if icon := inp.get("app_icon"):
+            self.set_icon_name(icon)
         self._update_subtitle(inp)
 
         new_names = [s["name"] for s in sinks]
@@ -423,12 +425,15 @@ class _StreamRow(Adw.ActionRow):
     @staticmethod
     def _do_smart_move(serial: int, sink_name: str) -> None:
         """
-        Routing inteligente:
-          1. Cambia el default sink → EasyEffects y auto-connect siguen automáticamente
-          2. Intenta mover el stream directamente (fallback para apps sin auto-connect)
+        Routing por stream individual:
+          1. pactl move-sink-input  — mueve SOLO este stream al sink elegido.
+             NO cambia el default sink (eso movería todos los demás también).
+          2. pw-metadata target.object — pinea el stream en WirePlumber para
+             que lo recuerde entre sesiones y no lo mueva si cambia el default.
         """
-        from audifonospro.audio.routing import smart_route_stream
-        smart_route_stream(serial, sink_name)
+        from audifonospro.audio.routing import move_stream_to_sink, pin_stream_to_sink
+        move_stream_to_sink(serial, sink_name)
+        pin_stream_to_sink(serial, sink_name)
 
 
 # ── Widget de fila para un dispositivo BT ─────────────────────────────────────

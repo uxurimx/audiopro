@@ -63,13 +63,15 @@ class StreamRow {
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        // Icono (botón clicable → menú de sinks)
+        // Ícono real de la app (GvcMixerStream tiene icon_name desde PipeWire)
+        const iconName = stream.icon_name || 'audio-volume-medium-symbolic';
         this._iconBtn = new St.Button({
             style_class: 'icon-button flat',
             can_focus: true,
             y_align: Clutter.ActorAlign.CENTER,
             child: new St.Icon({
-                icon_name: 'audio-volume-medium-symbolic',
+                gicon: Gio.ThemedIcon.new_with_default_fallbacks(iconName),
+                fallback_icon_name: 'audio-volume-medium-symbolic',
                 icon_size: 16,
             }),
         });
@@ -118,19 +120,16 @@ class StreamRow {
         const sinks = this._mixer.get_sinks();
         if (!sinks?.length) return;
 
-        this._sinkMenu = new PopupMenu.PopupMenu(this._iconBtn, 0.0, St.Side.BOTTOM);
+        // St.Side.TOP evita que el menú quede fuera de pantalla en el panel superior
+        this._sinkMenu = new PopupMenu.PopupMenu(this._iconBtn, 0.0, St.Side.TOP);
         Main.uiGroup.add_child(this._sinkMenu.actor);
+        this._sinkMenu.actor.add_style_class_name('popup-menu');
 
         for (const sink of sinks) {
-            const label = (sink.description || sink.name || '?').slice(0, 32);
+            const label = (sink.description || sink.name || '?').slice(0, 40);
             const item = new PopupMenu.PopupMenuItem(label);
             item.connect('activate', () => {
-                try {
-                    Gio.Subprocess.new(
-                        ['pactl', 'move-sink-input', `${this._stream.id}`, `${sink.name}`],
-                        Gio.SubprocessFlags.NONE
-                    );
-                } catch (_) {}
+                this._moveSinkInput(sink);
                 this._closeSinkMenu();
             });
             this._sinkMenu.addMenuItem(item);
@@ -148,6 +147,63 @@ class StreamRow {
         });
 
         this._sinkMenu.open(true);
+    }
+
+    _moveSinkInput(sink) {
+        // 1. pactl move-sink-input — mueve el stream ahora mismo
+        try {
+            Gio.Subprocess.new(
+                ['pactl', 'move-sink-input', `${this._stream.id}`, sink.name || `${sink.id}`],
+                Gio.SubprocessFlags.STDERR_SILENCE
+            );
+        } catch (e) {
+            console.warn(`[audioPro] pactl: ${e}`);
+        }
+
+        // 2. pw-metadata target.object — PINEA el stream a ese sink en WirePlumber.
+        //    WirePlumber detecta este cambio y lo guarda en su state file, así la
+        //    próxima vez que abras la app va al mismo dispositivo. También evita que
+        //    WirePlumber mueva el stream cuando cambia el default sink.
+        //    Necesitamos el node.id del stream (PW) y el object.serial del sink.
+        this._pinStreamToPWSink(sink);
+    }
+
+    _pinStreamToPWSink(sink) {
+        // Obtener el PipeWire node-id del stream y el object.serial del sink via pw-dump
+        try {
+            const proc = Gio.Subprocess.new(
+                ['pw-dump'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+            );
+            proc.communicate_utf8_async(null, null, (_p, res) => {
+                try {
+                    const [, out] = _p.communicate_utf8_finish(res);
+                    const nodes = JSON.parse(out);
+
+                    // Buscar el stream node por PA sink-input index (coincide con pa.id)
+                    const streamNode = nodes.find(n =>
+                        n.info?.props?.['pulse.id'] === this._stream.id ||
+                        n.info?.props?.['object.id'] === this._stream.id
+                    );
+                    // Buscar el sink node por PA sink index
+                    const sinkNode = nodes.find(n =>
+                        n.info?.props?.['pulse.id'] === sink.id ||
+                        (n.info?.props?.['node.name'] === sink.name &&
+                         n.info?.props?.['media.class']?.includes('Sink'))
+                    );
+
+                    if (!streamNode || !sinkNode) return;
+
+                    const nodeId = streamNode.id;
+                    const sinkSerial = sinkNode.info?.props?.['object.serial'] ?? sinkNode.id;
+
+                    Gio.Subprocess.new(
+                        ['pw-metadata', `${nodeId}`, 'target.object', `${sinkSerial}`],
+                        Gio.SubprocessFlags.STDERR_SILENCE
+                    );
+                } catch (_) {}
+            });
+        } catch (_) {}
     }
 
     _closeSinkMenu() {
@@ -420,8 +476,10 @@ export default class AudioProExtension extends Extension {
         Main.panel.statusArea.quickSettings.addExternalIndicator(
             this._streamsIndicator, 2
         );
+        // Mover las filas de streams entre el slider de volumen y el de brillo
+        this._repositionStreams();
 
-        // 2. Tile de audioPro (batería + EQ)
+        // 2. Tile de audioPro (batería + EQ) — va al final (entre los tiles)
         this._audioProIndicator = new AudioProIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(
             this._audioProIndicator
@@ -429,6 +487,21 @@ export default class AudioProExtension extends Extension {
 
         // 3. Gvc mixer para leer streams activos
         this._initMixer();
+    }
+
+    // Mueve el StreamsContainer para que quede justo debajo del slider de volumen
+    // (primer hijo del grid) y encima del slider de brillo (segundo hijo).
+    // QuickSettingsLayout itera container.get_children() en orden, así que
+    // set_child_above_sibling funciona para cambiar la posición en el layout.
+    _repositionStreams() {
+        try {
+            const grid = Main.panel.statusArea.quickSettings._grid;
+            const container = this._streamsIndicator._container;
+            if (!grid || !container) return;
+            const firstItem = grid.get_first_child();
+            if (firstItem && firstItem !== container)
+                grid.set_child_above_sibling(container, firstItem);
+        } catch (_) {}
     }
 
     disable() {
