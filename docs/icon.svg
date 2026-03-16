@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+
+    <!-- Background: deep navy → deep indigo -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#0d1b3e"/>
+      <stop offset="100%" stop-color="#150d38"/>
+    </linearGradient>
+
+    <!-- Center node: bright cyan sphere -->
+    <radialGradient id="cNode" cx="36%" cy="30%" r="65%">
+      <stop offset="0%"   stop-color="#a8f0ff"/>
+      <stop offset="55%"  stop-color="#0db8d8"/>
+      <stop offset="100%" stop-color="#006d9e"/>
+    </radialGradient>
+
+    <!-- Outer node cyan -->
+    <radialGradient id="nC" cx="36%" cy="30%" r="65%">
+      <stop offset="0%"   stop-color="#baf5ff"/>
+      <stop offset="100%" stop-color="#0891b2"/>
+    </radialGradient>
+
+    <!-- Outer node violet -->
+    <radialGradient id="nV" cx="36%" cy="30%" r="65%">
+      <stop offset="0%"   stop-color="#d8b4fe"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </radialGradient>
+
+    <!-- Soft glow for outer nodes -->
+    <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Stronger glow for center -->
+    <filter id="cglow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Clip to rounded-rect plate -->
+    <clipPath id="plate">
+      <rect width="128" height="128" rx="26"/>
+    </clipPath>
+
+  </defs>
+
+  <!-- ── Background plate ───────────────────────────────────────────── -->
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+
+  <!-- ── Pulse / radio rings from center ───────────────────────────── -->
+  <circle cx="64" cy="64" r="19"  fill="none" stroke="#0db8d8" stroke-width="1.1" opacity="0.22"/>
+  <circle cx="64" cy="64" r="30"  fill="none" stroke="#0db8d8" stroke-width="0.9" opacity="0.13"/>
+  <circle cx="64" cy="64" r="43"  fill="none" stroke="#0db8d8" stroke-width="0.7" opacity="0.07"/>
+
+  <!-- ── Connections: center → outer nodes ─────────────────────────── -->
+  <!-- Pentagon layout: top(64,20), top-right(103,48), btm-right(88,100), btm-left(40,100), top-left(25,48) -->
+  <line x1="64" y1="64" x2="64"  y2="20"  stroke="#0db8d8" stroke-width="1.3" opacity="0.45" stroke-linecap="round"/>
+  <line x1="64" y1="64" x2="103" y2="48"  stroke="#8b5cf6" stroke-width="1.3" opacity="0.45" stroke-linecap="round"/>
+  <line x1="64" y1="64" x2="88"  y2="100" stroke="#0db8d8" stroke-width="1.3" opacity="0.45" stroke-linecap="round"/>
+  <line x1="64" y1="64" x2="40"  y2="100" stroke="#8b5cf6" stroke-width="1.3" opacity="0.45" stroke-linecap="round"/>
+  <line x1="64" y1="64" x2="25"  y2="48"  stroke="#0db8d8" stroke-width="1.3" opacity="0.45" stroke-linecap="round"/>
+
+  <!-- ── Outer ring arcs (sparse — not all sides) ───────────────────── -->
+  <line x1="64"  y1="20"  x2="103" y2="48"  stroke="#6366f1" stroke-width="0.9" opacity="0.18"/>
+  <line x1="103" y1="48"  x2="88"  y2="100" stroke="#6366f1" stroke-width="0.9" opacity="0.18"/>
+  <line x1="40"  y1="100" x2="25"  y2="48"  stroke="#6366f1" stroke-width="0.9" opacity="0.18"/>
+
+  <!-- ── Audio sine wave — signal path crossing the design ─────────── -->
+  <path d="M13,74 Q21,62 30,74 Q39,86 48,74 Q57,62 66,74 Q75,86 84,74 Q93,62 102,74 Q111,86 116,78"
+        fill="none" stroke="#00e5ff" stroke-width="1.9"
+        opacity="0.30" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- ── Data dots flowing along connections ────────────────────────── -->
+  <!-- On the top connection -->
+  <circle cx="64" cy="42"  r="1.8" fill="#7ee8fa" opacity="0.65"/>
+  <!-- On bottom-right connection -->
+  <circle cx="78" cy="85"  r="1.6" fill="#c4b5fd" opacity="0.65"/>
+  <!-- On top-left connection -->
+  <circle cx="41" cy="53"  r="1.6" fill="#7ee8fa" opacity="0.65"/>
+  <!-- On the wave itself -->
+  <circle cx="48" cy="74"  r="1.4" fill="#00e5ff" opacity="0.50"/>
+  <circle cx="84" cy="74"  r="1.4" fill="#00e5ff" opacity="0.50"/>
+
+  <!-- ── Outer nodes ─────────────────────────────────────────────────── -->
+  <circle cx="64"  cy="20"  r="5.5" fill="url(#nC)" filter="url(#glow)"/>
+  <circle cx="103" cy="48"  r="5.0" fill="url(#nV)" filter="url(#glow)"/>
+  <circle cx="88"  cy="100" r="5.5" fill="url(#nC)" filter="url(#glow)"/>
+  <circle cx="40"  cy="100" r="5.0" fill="url(#nV)" filter="url(#glow)"/>
+  <circle cx="25"  cy="48"  r="5.5" fill="url(#nC)" filter="url(#glow)"/>
+
+  <!-- ── Center node ────────────────────────────────────────────────── -->
+  <!-- Aura -->
+  <circle cx="64" cy="64" r="17" fill="#0db8d8" opacity="0.10"/>
+  <!-- Body -->
+  <circle cx="64" cy="64" r="12" fill="url(#cNode)" filter="url(#cglow)"/>
+  <!-- Inner bright core -->
+  <circle cx="64" cy="64" r="5"  fill="#e8fbff" opacity="0.80"/>
+  <!-- Specular highlight -->
+  <circle cx="60" cy="60" r="3"  fill="white"   opacity="0.38"/>
+
+</svg>

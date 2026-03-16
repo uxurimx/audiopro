@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>audifonospro — Control total de tu audio personal</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <meta name="description" content="Sistema de audio personal inteligente. Cinema multi-idioma, traducción en tiempo real, routing de dispositivos. Corre en tu laptop, sin suscripciones, sin nube." />
+  <meta property="og:title" content="audifonospro" />
+  <meta property="og:description" content="5 dispositivos. 5 idiomas. 1 laptop. Sin suscripciones." />
+  <meta property="og:type" content="website" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #070c18;
+      --surface:   #0d1b3e;
+      --surface2:  #111d42;
+      --border:    rgba(0, 180, 216, 0.13);
+      --border2:   rgba(139, 92, 246, 0.13);
+      --cyan:      #0db8d8;
+      --cyan-lite: #67e3f9;
+      --violet:    #8b5cf6;
+      --violet-lite:#c4b5fd;
+      --glow-c:    rgba(13, 184, 216, 0.18);
+      --glow-v:    rgba(139, 92, 246, 0.15);
+      --text:      #e2f0ff;
+      --text-2:    #8da4c4;
+      --text-3:    #4a6480;
+      --radius:    16px;
+      --radius-sm: 10px;
+      --font:      'Inter', system-ui, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise texture overlay ─────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── Typography ────────────────────────────────────────────────────── */
+    h1, h2, h3, h4 { line-height: 1.2; font-weight: 700; }
+    h1 { font-size: clamp(2.4rem, 6vw, 4.2rem); letter-spacing: -0.03em; }
+    h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); letter-spacing: -0.02em; }
+    h3 { font-size: clamp(1.2rem, 2.5vw, 1.5rem); }
+    p  { color: var(--text-2); }
+
+    .gradient-text {
+      background: linear-gradient(120deg, var(--cyan-lite) 0%, var(--cyan) 40%, var(--violet-lite) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── Layout helpers ────────────────────────────────────────────────── */
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+    section    { position: relative; padding: 96px 0; }
+
+    .tag {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 99px;
+      border: 1px solid var(--border);
+      background: rgba(13, 184, 216, 0.06);
+      font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--cyan);
+      margin-bottom: 20px;
+    }
+    .tag-v { border-color: var(--border2); background: rgba(139,92,246,0.06); color: var(--violet-lite); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 600px) {
+      section { padding: 64px 0; }
+    }
+
+    /* ── Card ──────────────────────────────────────────────────────────── */
+    .card {
+      background: rgba(13, 27, 62, 0.5);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.3s;
+    }
+    .card:hover { border-color: rgba(13, 184, 216, 0.3); transform: translateY(-2px); }
+    .card-v { border-color: var(--border2); }
+    .card-v:hover { border-color: rgba(139, 92, 246, 0.35); }
+
+    /* ── Buttons ────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 24px; border-radius: var(--radius-sm);
+      font-weight: 600; font-size: 0.95rem; text-decoration: none;
+      transition: all 0.2s; cursor: pointer; border: none;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--cyan) 0%, #0891b2 100%);
+      color: #fff; box-shadow: 0 0 24px rgba(13,184,216,0.3);
+    }
+    .btn-primary:hover { box-shadow: 0 0 36px rgba(13,184,216,0.5); transform: translateY(-1px); }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-2);
+    }
+    .btn-outline:hover { border-color: var(--cyan); color: var(--cyan); }
+
+    /* ── Divider / separator ────────────────────────────────────────────── */
+    .sep {
+      width: 100%; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border), transparent);
+      margin: 0;
+    }
+
+    /* ── Icon box ───────────────────────────────────────────────────────── */
+    .icon-box {
+      width: 48px; height: 48px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.4rem; margin-bottom: 16px;
+      background: rgba(13, 184, 216, 0.1);
+      border: 1px solid var(--border);
+    }
+    .icon-box-v { background: rgba(139, 92, 246, 0.1); border-color: var(--border2); }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* NAV                                                                  */
+    /* ─────────────────────────────────────────────────────────────────── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 16px 24px;
+      background: rgba(7, 12, 24, 0.7);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      text-decoration: none; color: var(--text);
+      font-weight: 700; font-size: 1rem; letter-spacing: -0.01em;
+    }
+    .nav-logo svg { width: 32px; height: 32px; }
+    .nav-links {
+      display: flex; gap: 32px; list-style: none;
+      font-size: 0.875rem; font-weight: 500;
+    }
+    .nav-links a { text-decoration: none; color: var(--text-2); transition: color 0.2s; }
+    .nav-links a:hover { color: var(--cyan); }
+    .nav-ctas { display: flex; gap: 10px; }
+
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* HERO                                                                 */
+    /* ─────────────────────────────────────────────────────────────────── */
+    #hero {
+      min-height: 100vh;
+      display: flex; align-items: center;
+      padding-top: 80px;
+      overflow: hidden;
+    }
+
+    .hero-inner {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 48px; align-items: center;
+    }
+    @media (max-width: 900px) {
+      .hero-inner { grid-template-columns: 1fr; text-align: center; }
+      .hero-visual { display: none; }
+      .hero-ctas { justify-content: center; }
+    }
+
+    .hero-stat {
+      font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--cyan);
+      margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .hero-stat::before {
+      content: ''; width: 20px; height: 1px; background: var(--cyan);
+    }
+
+    .hero h1 { margin-bottom: 20px; }
+
+    .hero-desc {
+      font-size: 1.1rem; color: var(--text-2); margin-bottom: 36px;
+      max-width: 480px;
+    }
+
+    .hero-ctas {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 48px;
+    }
+
+    .hero-badges {
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .badge {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.78rem; color: var(--text-3); font-weight: 500;
+    }
+    .badge-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--cyan);
+    }
+    .badge-dot-v { background: var(--violet); }
+
+    /* Hero visual */
+    .hero-visual {
+      display: flex; justify-content: center; align-items: center;
+      position: relative;
+    }
+
+    .hero-orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(60px);
+      pointer-events: none;
+    }
+    .orb-c {
+      width: 360px; height: 360px;
+      background: radial-gradient(circle, rgba(13,184,216,0.2) 0%, transparent 70%);
+      top: -60px; left: -60px;
+    }
+    .orb-v {
+      width: 280px; height: 280px;
+      background: radial-gradient(circle, rgba(139,92,246,0.18) 0%, transparent 70%);
+      bottom: -40px; right: -40px;
+    }
+
+    .hero-svg-wrap {
+      position: relative; z-index: 1;
+      animation: float 6s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-12px); }
+    }
+
+    /* ── Animated hero SVG ─── */
+    .hero-svg-wrap svg .pulse-ring {
+      transform-origin: 240px 240px;
+      animation: pulse 3s ease-in-out infinite;
+    }
+    .hero-svg-wrap svg .pulse-ring:nth-child(2) { animation-delay: 0.8s; }
+    .hero-svg-wrap svg .pulse-ring:nth-child(3) { animation-delay: 1.6s; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.22; }
+      50%       { opacity: 0.06; }
+    }
+    .node-anim { animation: nodePulse 2.5s ease-in-out infinite; }
+    .node-anim:nth-child(2) { animation-delay: 0.4s; }
+    .node-anim:nth-child(3) { animation-delay: 0.8s; }
+    .node-anim:nth-child(4) { animation-delay: 1.2s; }
+    .node-anim:nth-child(5) { animation-delay: 1.6s; }
+    @keyframes nodePulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.55; }
+    }
+    .wave-anim {
+      stroke-dasharray: 200;
+      stroke-dashoffset: 200;
+      animation: waveDraw 2.5s ease-in-out infinite alternate;
+    }
+    @keyframes waveDraw {
+      to { stroke-dashoffset: 0; }
+    }
+
+    /* ── Glow background ─────────────────────────────────────────────── */
+    .bg-glow {
+      position: absolute; pointer-events: none; z-index: -1;
+      border-radius: 50%; filter: blur(100px);
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* METRICS BAR                                                          */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .metrics {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .metrics-inner {
+      display: flex; justify-content: space-around; flex-wrap: wrap; gap: 32px;
+    }
+    .metric { text-align: center; }
+    .metric-num {
+      font-size: 2.4rem; font-weight: 800; letter-spacing: -0.03em;
+      background: linear-gradient(135deg, var(--cyan-lite), var(--cyan));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .metric-num-v {
+      background: linear-gradient(135deg, var(--violet-lite), var(--violet));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .metric-label { font-size: 0.8rem; color: var(--text-3); font-weight: 500; margin-top: 4px; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* PROBLEM                                                              */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .problem-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+    @media(max-width:700px) { .problem-cards { grid-template-columns: 1fr; } }
+
+    .problem-card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius); padding: 28px;
+    }
+    .problem-card .icon { font-size: 1.8rem; margin-bottom: 12px; }
+    .problem-card h3 { font-size: 1.05rem; margin-bottom: 8px; color: var(--text); }
+    .problem-card p  { font-size: 0.9rem; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* FEATURE: CINEMA                                                      */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .cinema-layout {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center;
+    }
+    @media(max-width:900px) { .cinema-layout { grid-template-columns: 1fr; } }
+
+    .cinema-diagram {
+      background: rgba(13, 27, 62, 0.6);
+      border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px;
+      font-family: 'Inter', monospace;
+    }
+    .cd-title {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 20px;
+    }
+    .cd-file {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; background: rgba(0,229,255,0.06);
+      border: 1px solid rgba(0,229,255,0.15);
+      border-radius: 8px; margin-bottom: 20px;
+      font-size: 0.85rem; font-weight: 600;
+    }
+    .cd-tracks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+    .cd-track {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 0.82rem;
+    }
+    .cd-track-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .cd-track-line {
+      flex: 1; height: 1px;
+      background: linear-gradient(90deg, rgba(13,184,216,0.4), rgba(13,184,216,0.05));
+    }
+    .cd-devices { display: flex; flex-direction: column; gap: 6px; }
+    .cd-device {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px;
+      background: rgba(139,92,246,0.08);
+      border: 1px solid rgba(139,92,246,0.2);
+      border-radius: 8px; font-size: 0.82rem;
+    }
+
+    .cinema-bullets { list-style: none; display: flex; flex-direction: column; gap: 12px; margin: 24px 0; }
+    .cinema-bullet {
+      display: flex; align-items: flex-start; gap: 10px;
+      font-size: 0.95rem; color: var(--text-2);
+    }
+    .bullet-icon {
+      width: 20px; height: 20px; flex-shrink: 0;
+      border-radius: 50%; background: rgba(13,184,216,0.12);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.6rem; color: var(--cyan); margin-top: 2px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* FEATURE: TRANSLATOR                                                  */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .trans-flow {
+      display: flex; align-items: center; flex-wrap: wrap;
+      gap: 8px; margin: 28px 0;
+    }
+    .trans-step {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px;
+      background: rgba(13,27,62,0.7);
+      border: 1px solid var(--border);
+      border-radius: 8px; font-size: 0.82rem; font-weight: 500;
+    }
+    .trans-arrow { color: var(--text-3); font-size: 0.9rem; }
+
+    .quality-table {
+      width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 0.85rem;
+    }
+    .quality-table th {
+      text-align: left; padding: 8px 12px; color: var(--text-3);
+      font-weight: 600; letter-spacing: 0.05em; font-size: 0.72rem;
+      text-transform: uppercase; border-bottom: 1px solid var(--border);
+    }
+    .quality-table td {
+      padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: var(--text-2);
+    }
+    .quality-table tr:last-child td { border-bottom: none; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 99px;
+      font-size: 0.72rem; font-weight: 600;
+    }
+    .pill-c { background: rgba(13,184,216,0.12); color: var(--cyan); }
+    .pill-v { background: rgba(139,92,246,0.12); color: var(--violet-lite); }
+    .pill-g { background: rgba(34,197,94,0.12); color: #4ade80; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* FEATURE: AUDIO ROUTING                                               */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .routing-mock {
+      background: rgba(13,27,62,0.7);
+      border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .mock-header {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      font-size: 0.78rem; font-weight: 600; color: var(--text-3);
+      letter-spacing: 0.06em; text-transform: uppercase;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .mock-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 0.875rem;
+    }
+    .mock-row:last-child { border-bottom: none; }
+    .mock-app { display: flex; align-items: center; gap: 10px; }
+    .mock-app-icon {
+      width: 28px; height: 28px; border-radius: 6px;
+      background: rgba(139,92,246,0.15); border: 1px solid var(--border2);
+      display: flex; align-items: center; justify-content: center; font-size: 0.85rem;
+    }
+    .mock-sink {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 6px;
+      background: rgba(13,184,216,0.08); border: 1px solid var(--border);
+      font-size: 0.78rem; color: var(--cyan); cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* LOCAL FIRST                                                          */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .local-grid {
+      display: grid; grid-template-columns: repeat(3,1fr); gap: 20px;
+    }
+    @media(max-width:700px) { .local-grid { grid-template-columns: 1fr; } }
+
+    .local-card {
+      padding: 24px; border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: rgba(13,27,62,0.4);
+    }
+    .local-card .num {
+      font-size: 2rem; font-weight: 800;
+      background: linear-gradient(135deg, var(--cyan-lite), var(--cyan));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text; margin-bottom: 4px;
+    }
+    .local-card .num-v {
+      background: linear-gradient(135deg, var(--violet-lite), var(--violet));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .local-card h4 { font-size: 0.95rem; margin-bottom: 6px; }
+    .local-card p  { font-size: 0.85rem; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* ANC                                                                  */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .anc-levels {
+      display: flex; gap: 8px; flex-wrap: wrap; margin: 24px 0;
+    }
+    .anc-level {
+      flex: 1; min-width: 80px;
+      padding: 12px 10px; border-radius: 10px; text-align: center;
+      border: 1px solid var(--border); font-size: 0.78rem;
+    }
+    .anc-level .lvl-num {
+      font-size: 1.2rem; font-weight: 700; color: var(--cyan);
+      display: block; margin-bottom: 4px;
+    }
+    .anc-level.active {
+      background: rgba(13,184,216,0.1);
+      border-color: var(--cyan);
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* TECH STACK                                                           */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .tech-pills {
+      display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px;
+    }
+    .tech-pill {
+      padding: 7px 16px; border-radius: 99px;
+      border: 1px solid var(--border);
+      background: rgba(13,27,62,0.5);
+      font-size: 0.82rem; font-weight: 500; color: var(--text-2);
+      transition: all 0.2s;
+    }
+    .tech-pill:hover { border-color: var(--cyan); color: var(--cyan); }
+    .tech-pill-v { border-color: var(--border2); }
+    .tech-pill-v:hover { border-color: var(--violet); color: var(--violet-lite); }
+
+    .arch-block {
+      background: rgba(7,12,24,0.8); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px;
+      font-family: 'Courier New', monospace; font-size: 0.78rem;
+      color: var(--text-2); line-height: 1.8; overflow-x: auto;
+      margin-top: 24px;
+    }
+    .arch-block .c { color: var(--cyan); }
+    .arch-block .v { color: var(--violet-lite); }
+    .arch-block .g { color: #4ade80; }
+    .arch-block .dim { color: var(--text-3); }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* ROADMAP                                                              */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .roadmap-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;
+      margin-top: 40px;
+    }
+    @media(max-width:700px) { .roadmap-grid { grid-template-columns: 1fr; } }
+
+    .roadmap-card {
+      padding: 24px; border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: rgba(13,27,62,0.3);
+      position: relative; overflow: hidden;
+    }
+    .roadmap-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--violet));
+    }
+    .roadmap-card.v::before {
+      background: linear-gradient(90deg, var(--violet), #ec4899);
+    }
+    .roadmap-phase {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--cyan); margin-bottom: 8px;
+    }
+    .roadmap-phase-v { color: var(--violet-lite); }
+    .roadmap-card h4 { margin-bottom: 10px; }
+    .roadmap-features {
+      list-style: none; display: flex; flex-direction: column; gap: 6px;
+    }
+    .roadmap-features li {
+      font-size: 0.85rem; color: var(--text-2);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .roadmap-features li::before {
+      content: '→'; color: var(--cyan); font-size: 0.7rem;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* STORY                                                                */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .story-card {
+      max-width: 760px; margin: 0 auto;
+      background: rgba(13,27,62,0.5);
+      border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 48px;
+    }
+    .story-card p { font-size: 1.05rem; line-height: 1.8; margin-bottom: 16px; }
+    .story-card p:last-child { margin-bottom: 0; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* CTA                                                                  */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .cta-section {
+      text-align: center; padding: 96px 0;
+      position: relative;
+    }
+    .cta-glow {
+      position: absolute; width: 600px; height: 400px;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: radial-gradient(ellipse, rgba(13,184,216,0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .cta-section h2 { margin-bottom: 16px; }
+    .cta-section p  { font-size: 1.1rem; margin-bottom: 36px; }
+    .cta-section .btns { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* FOOTER                                                               */
+    /* ─────────────────────────────────────────────────────────────────── */
+    footer {
+      padding: 32px 0; border-top: 1px solid var(--border);
+    }
+    .footer-inner {
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 16px;
+    }
+    .footer-logo { display: flex; align-items: center; gap: 8px; }
+    .footer-logo svg { width: 24px; height: 24px; }
+    .footer-copy { font-size: 0.82rem; color: var(--text-3); }
+    .footer-links { display: flex; gap: 20px; }
+    .footer-links a {
+      font-size: 0.82rem; color: var(--text-3); text-decoration: none;
+      transition: color 0.2s;
+    }
+    .footer-links a:hover { color: var(--cyan); }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /* SCROLL REVEAL                                                        */
+    /* ─────────────────────────────────────────────────────────────────── */
+    .reveal {
+      opacity: 0; transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+    .reveal-delay-1 { transition-delay: 0.1s; }
+    .reveal-delay-2 { transition-delay: 0.2s; }
+    .reveal-delay-3 { transition-delay: 0.3s; }
+    .reveal-delay-4 { transition-delay: 0.4s; }
+  </style>
+</head>
+
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────────────────────── -->
+<nav>
+  <a href="#" class="nav-logo">
+    <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="nbg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0d1b3e"/>
+          <stop offset="100%" stop-color="#150d38"/>
+        </linearGradient>
+        <radialGradient id="nc" cx="36%" cy="30%" r="65%">
+          <stop offset="0%" stop-color="#a8f0ff"/>
+          <stop offset="100%" stop-color="#006d9e"/>
+        </radialGradient>
+      </defs>
+      <rect width="128" height="128" rx="26" fill="url(#nbg)"/>
+      <circle cx="64" cy="64" r="19" fill="none" stroke="#0db8d8" stroke-width="1.1" opacity="0.22"/>
+      <circle cx="64" cy="64" r="32" fill="none" stroke="#0db8d8" stroke-width="0.8" opacity="0.12"/>
+      <line x1="64" y1="64" x2="64" y2="20" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+      <line x1="64" y1="64" x2="103" y2="48" stroke="#8b5cf6" stroke-width="1.3" opacity="0.45"/>
+      <line x1="64" y1="64" x2="88" y2="100" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+      <line x1="64" y1="64" x2="40" y2="100" stroke="#8b5cf6" stroke-width="1.3" opacity="0.45"/>
+      <line x1="64" y1="64" x2="25" y2="48" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+      <circle cx="64" cy="20" r="5.5" fill="#0db8d8" opacity="0.9"/>
+      <circle cx="103" cy="48" r="5" fill="#8b5cf6" opacity="0.9"/>
+      <circle cx="88" cy="100" r="5.5" fill="#0db8d8" opacity="0.9"/>
+      <circle cx="40" cy="100" r="5" fill="#8b5cf6" opacity="0.9"/>
+      <circle cx="25" cy="48" r="5.5" fill="#0db8d8" opacity="0.9"/>
+      <circle cx="64" cy="64" r="13" fill="url(#nc)"/>
+      <circle cx="64" cy="64" r="5" fill="#e8fbff" opacity="0.8"/>
+    </svg>
+    audifonospro
+  </a>
+
+  <ul class="nav-links">
+    <li><a href="#cinema">Cinema</a></li>
+    <li><a href="#translator">Traductor</a></li>
+    <li><a href="#routing">Routing</a></li>
+    <li><a href="#local">Local-first</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+  </ul>
+
+  <div class="nav-ctas">
+    <a href="#story" class="btn btn-outline" style="padding:9px 18px;font-size:0.85rem;">La historia</a>
+    <a href="https://github.com" class="btn btn-primary" style="padding:9px 18px;font-size:0.85rem;">Ver en GitHub ↗</a>
+  </div>
+</nav>
+
+
+<!-- ── HERO ─────────────────────────────────────────────────────────────── -->
+<section id="hero">
+  <div class="container">
+    <div class="hero-inner">
+
+      <div class="hero-content">
+        <div class="hero-stat">Sistema de audio personal inteligente</div>
+        <h1>Tu audio.<br><span class="gradient-text">Sin límites.</span></h1>
+        <p class="hero-desc">
+          Enruta música, traduce voz en tiempo real y distribuye audio de cine
+          a cada persona en su idioma. Corre en tu laptop.
+          Sin suscripciones. Sin nube.
+        </p>
+        <div class="hero-ctas">
+          <a href="#cinema" class="btn btn-primary">Explorar características ↓</a>
+          <a href="https://github.com" class="btn btn-outline">GitHub ↗</a>
+        </div>
+        <div class="hero-badges">
+          <span class="badge"><span class="badge-dot"></span>Python + GTK4</span>
+          <span class="badge"><span class="badge-dot"></span>GStreamer + PipeWire</span>
+          <span class="badge"><span class="badge-dot badge-dot-v"></span>IA local</span>
+          <span class="badge"><span class="badge-dot badge-dot-v"></span>$0 / sesión</span>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="hero-orb orb-c"></div>
+        <div class="hero-orb orb-v"></div>
+        <div class="hero-svg-wrap">
+          <svg width="420" height="420" viewBox="0 0 480 480" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <radialGradient id="hcNode" cx="36%" cy="30%" r="65%">
+                <stop offset="0%" stop-color="#a8f0ff"/>
+                <stop offset="55%" stop-color="#0db8d8"/>
+                <stop offset="100%" stop-color="#006d9e"/>
+              </radialGradient>
+              <radialGradient id="hnC" cx="36%" cy="30%" r="65%">
+                <stop offset="0%" stop-color="#baf5ff"/>
+                <stop offset="100%" stop-color="#0891b2"/>
+              </radialGradient>
+              <radialGradient id="hnV" cx="36%" cy="30%" r="65%">
+                <stop offset="0%" stop-color="#d8b4fe"/>
+                <stop offset="100%" stop-color="#6d28d9"/>
+              </radialGradient>
+              <filter id="hglow">
+                <feGaussianBlur stdDeviation="4" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="hcglow">
+                <feGaussianBlur stdDeviation="9" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <!-- Pulse rings -->
+            <circle cx="240" cy="240" r="72" fill="none" stroke="#0db8d8" stroke-width="1.2" class="pulse-ring" opacity="0.22"/>
+            <circle cx="240" cy="240" r="115" fill="none" stroke="#0db8d8" stroke-width="1" class="pulse-ring" opacity="0.13"/>
+            <circle cx="240" cy="240" r="162" fill="none" stroke="#0db8d8" stroke-width="0.8" class="pulse-ring" opacity="0.07"/>
+
+            <!-- Center connections -->
+            <line x1="240" y1="240" x2="240" y2="78"  stroke="#0db8d8" stroke-width="1.6" opacity="0.4"/>
+            <line x1="240" y1="240" x2="388" y2="162" stroke="#8b5cf6" stroke-width="1.6" opacity="0.4"/>
+            <line x1="240" y1="240" x2="330" y2="378" stroke="#0db8d8" stroke-width="1.6" opacity="0.4"/>
+            <line x1="240" y1="240" x2="150" y2="378" stroke="#8b5cf6" stroke-width="1.6" opacity="0.4"/>
+            <line x1="240" y1="240" x2="92"  y2="162" stroke="#0db8d8" stroke-width="1.6" opacity="0.4"/>
+
+            <!-- Ring connections (sparse) -->
+            <line x1="240" y1="78"  x2="388" y2="162" stroke="#6366f1" stroke-width="1" opacity="0.18"/>
+            <line x1="388" y1="162" x2="330" y2="378" stroke="#6366f1" stroke-width="1" opacity="0.18"/>
+            <line x1="150" y1="378" x2="92"  y2="162" stroke="#6366f1" stroke-width="1" opacity="0.18"/>
+
+            <!-- Audio wave -->
+            <path d="M48,286 Q72,256 96,286 Q120,316 148,286 Q176,256 210,286 Q244,316 270,286 Q296,256 330,286 Q360,316 390,286 Q415,266 430,278"
+              fill="none" stroke="#00e5ff" stroke-width="2.2" opacity="0.30" stroke-linecap="round" class="wave-anim"/>
+
+            <!-- Second wave (offset) -->
+            <path d="M48,308 Q82,292 110,308 Q140,324 168,308 Q198,292 228,308 Q258,324 288,308 Q316,292 348,308"
+              fill="none" stroke="#8b5cf6" stroke-width="1.4" opacity="0.18" stroke-linecap="round"/>
+
+            <!-- Data dots -->
+            <circle cx="240" cy="160" r="4.5" fill="#7ee8fa" opacity="0.65" class="node-anim"/>
+            <circle cx="293" cy="312" r="4"   fill="#c4b5fd" opacity="0.65" class="node-anim"/>
+            <circle cx="156" cy="200" r="4"   fill="#7ee8fa" opacity="0.65" class="node-anim"/>
+            <circle cx="148" cy="286" r="3.5" fill="#00e5ff" opacity="0.5"  class="node-anim"/>
+            <circle cx="288" cy="286" r="3.5" fill="#00e5ff" opacity="0.5"  class="node-anim"/>
+
+            <!-- Outer nodes -->
+            <circle cx="240" cy="78"  r="16" fill="url(#hnC)" filter="url(#hglow)" class="node-anim"/>
+            <circle cx="388" cy="162" r="14" fill="url(#hnV)" filter="url(#hglow)" class="node-anim"/>
+            <circle cx="330" cy="378" r="16" fill="url(#hnC)" filter="url(#hglow)" class="node-anim"/>
+            <circle cx="150" cy="378" r="14" fill="url(#hnV)" filter="url(#hglow)" class="node-anim"/>
+            <circle cx="92"  cy="162" r="16" fill="url(#hnC)" filter="url(#hglow)" class="node-anim"/>
+
+            <!-- Center aura -->
+            <circle cx="240" cy="240" r="55" fill="#0db8d8" opacity="0.08"/>
+            <!-- Center node -->
+            <circle cx="240" cy="240" r="42" fill="url(#hcNode)" filter="url(#hcglow)"/>
+            <circle cx="240" cy="240" r="18" fill="#e8fbff" opacity="0.8"/>
+            <circle cx="226" cy="226" r="9"  fill="white"   opacity="0.35"/>
+          </svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ── METRICS ───────────────────────────────────────────────────────────── -->
+<div class="metrics">
+  <div class="container">
+    <div class="metrics-inner">
+      <div class="metric">
+        <div class="metric-num">5+</div>
+        <div class="metric-label">dispositivos simultáneos</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num">3</div>
+        <div class="metric-label">modos de operación</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num metric-num-v">$0</div>
+        <div class="metric-label">costo por sesión (modo local)</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num">~2s</div>
+        <div class="metric-label">latencia de traducción</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num metric-num-v">5</div>
+        <div class="metric-label">niveles de cancelación de ruido</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ── THE PROBLEM ──────────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="tag">El problema</div>
+    <h2 style="margin-bottom:12px;">Tu audio vive en el caos.</h2>
+    <p style="max-width:520px;margin-bottom:48px;">
+      Tienes múltiples dispositivos, múltiples personas y múltiples necesidades de audio.
+      El sistema operativo no fue diseñado para eso.
+    </p>
+
+    <div class="problem-cards">
+      <div class="problem-card reveal">
+        <div class="icon">🎬</div>
+        <h3>Noche de cine, cinco idiomas</h3>
+        <p>Tu familia quiere ver la misma película pero cada quien prefiere un idioma diferente.
+           No existe una solución simple para esto. Hasta ahora.</p>
+      </div>
+      <div class="problem-card reveal reveal-delay-1">
+        <div class="icon">🌐</div>
+        <h3>Barreras de idioma en tiempo real</h3>
+        <p>Reuniones, conversaciones, podcasts en otro idioma. Quieres entender al instante,
+           sin depender de servicios externos costosos.</p>
+      </div>
+      <div class="problem-card reveal reveal-delay-2">
+        <div class="icon">🔊</div>
+        <h3>¿Spotify está en los bocinas o los audífonos?</h3>
+        <p>Cambiar el destino de tu música requiere abrir configuraciones del sistema,
+           buscar el dispositivo correcto y rezar para que no cambie solo.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── CINEMA ───────────────────────────────────────────────────────────── -->
+<section id="cinema">
+  <div class="container">
+    <div class="cinema-layout">
+
+      <div class="cinema-text reveal">
+        <div class="tag">Cinema Mode</div>
+        <h2>Un archivo.<br>Cada quien su idioma.</h2>
+        <p style="margin:16px 0 0;">
+          audifonospro detecta todas las pistas de audio de tu archivo MKV o MP4
+          y las distribuye simultáneamente a cada dispositivo conectado.
+          Cada persona elige qué pista escucha. Nadie pierde calidad.
+        </p>
+
+        <ul class="cinema-bullets">
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Soporte para MKV, MP4, AVI, WebM con múltiples pistas de audio
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Cada dispositivo tiene su propio selector de pista — varios pueden compartir la misma
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Hot-swap en tiempo real: cambia la pista sin detener la reproducción
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Compensación automática de latencia por tipo de dispositivo (BT, jack, HDMI)
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            EQ independiente por dispositivo para nivelar diferencias de calidad
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Video en pantalla con sincronización de audio garantizada
+          </li>
+        </ul>
+      </div>
+
+      <div class="cinema-diagram reveal reveal-delay-1">
+        <div class="cd-title">pipeline en tiempo real</div>
+        <div class="cd-file">
+          <span>🎬</span> pelicula.mkv &nbsp;<span style="color:var(--text-3)">·</span>&nbsp; 4 pistas detectadas
+        </div>
+
+        <div class="cd-tracks">
+          <div class="cd-track">
+            <span class="cd-track-dot" style="background:#0db8d8"></span>
+            <span style="color:var(--text)">Español — AAC 5.1</span>
+            <span class="cd-track-line"></span>
+          </div>
+          <div class="cd-track">
+            <span class="cd-track-dot" style="background:#8b5cf6"></span>
+            <span style="color:var(--text)">Inglés — DTS Estéreo</span>
+            <span class="cd-track-line" style="background:linear-gradient(90deg,rgba(139,92,246,0.4),transparent)"></span>
+          </div>
+          <div class="cd-track">
+            <span class="cd-track-dot" style="background:#0db8d8"></span>
+            <span style="color:var(--text)">Alemán — AC3 Estéreo</span>
+            <span class="cd-track-line"></span>
+          </div>
+          <div class="cd-track">
+            <span class="cd-track-dot" style="background:#8b5cf6"></span>
+            <span style="color:var(--text)">Japonés — AAC Estéreo</span>
+            <span class="cd-track-line" style="background:linear-gradient(90deg,rgba(139,92,246,0.4),transparent)"></span>
+          </div>
+        </div>
+
+        <div style="font-size:0.7rem;color:var(--text-3);margin-bottom:10px;letter-spacing:0.05em;text-transform:uppercase;">→ dispositivos</div>
+
+        <div class="cd-devices">
+          <div class="cd-device"><span>🎧</span><span style="flex:1">JBL Vive Buds</span><span style="color:var(--cyan);font-size:0.75rem">Español</span></div>
+          <div class="cd-device"><span>🎧</span><span style="flex:1">Audífonos jack</span><span style="color:var(--cyan);font-size:0.75rem">Inglés</span></div>
+          <div class="cd-device"><span>📺</span><span style="flex:1">TV HDMI</span><span style="color:var(--cyan);font-size:0.75rem">Español</span></div>
+          <div class="cd-device"><span>🔈</span><span style="flex:1">Bocinas BT</span><span style="color:var(--violet-lite);font-size:0.75rem">Alemán</span></div>
+          <div class="cd-device"><span>💻</span><span style="flex:1">Laptop integrado</span><span style="color:var(--violet-lite);font-size:0.75rem">Japonés</span></div>
+        </div>
+
+        <div style="margin-top:16px;padding:12px;background:rgba(0,229,255,0.04);border:1px solid rgba(0,229,255,0.1);border-radius:8px;font-size:0.78rem;color:var(--text-2)">
+          <span style="color:var(--cyan)">→</span> Cada dispositivo escucha su pista. Varios pueden compartir la misma.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── TRANSLATOR ────────────────────────────────────────────────────────── -->
+<section id="translator">
+  <div class="container">
+    <div class="tag tag-v">Traductor</div>
+    <div style="max-width:640px">
+      <h2>Tu voz, traducida.<br><span class="gradient-text">Al instante.</span></h2>
+      <p style="margin-top:16px;font-size:1.05rem">
+        Habla en español. Escucha la traducción en inglés (o cualquier idioma)
+        directamente en tus audífonos. Funciona con cualquier dispositivo que tenga micrófono
+        —incluido el de tu laptop— y no requiere ningún servicio de pago.
+      </p>
+    </div>
+
+    <div class="trans-flow reveal">
+      <div class="trans-step">🎤 Voz captada</div>
+      <span class="trans-arrow">→</span>
+      <div class="trans-step">🔇 ANC WebRTC</div>
+      <span class="trans-arrow">→</span>
+      <div class="trans-step">📝 Whisper STT</div>
+      <span class="trans-arrow">→</span>
+      <div class="trans-step">🌐 LLM / GPT</div>
+      <span class="trans-arrow">→</span>
+      <div class="trans-step">🗣️ Síntesis TTS</div>
+      <span class="trans-arrow">→</span>
+      <div class="trans-step" style="border-color:var(--border2)">🎧 Audífonos</div>
+    </div>
+
+    <div class="grid-2" style="margin-top:48px;gap:48px;align-items:start">
+      <div class="reveal">
+        <h3 style="margin-bottom:16px">Cualquier micrófono. Sin restricciones.</h3>
+        <p style="margin-bottom:16px">
+          El Traductor detecta automáticamente todos los micrófonos disponibles en PipeWire.
+          ¿Tienes JBL con mic? Activa el modo HFP con un clic y el sistema cambia el perfil
+          Bluetooth, espera la reconexión y selecciona el mic automáticamente.
+        </p>
+        <p>
+          ¿Prefieres el micrófono de tu laptop? También funciona. ¿Quieres cancelar el ruido
+          del ambiente antes de transcribir? Activa ANC con un toggle y el sistema crea un
+          micrófono virtual limpio en PipeWire.
+        </p>
+
+        <div style="margin-top:24px;padding:16px;background:rgba(13,27,62,0.6);border:1px solid var(--border);border-radius:var(--radius-sm)">
+          <div style="font-size:0.75rem;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Auto-detección de idioma</div>
+          <p style="font-size:0.875rem">
+            Whisper detecta automáticamente el idioma que hablas.
+            No necesitas configurar nada. Habla español, inglés, francés o japonés
+            — el sistema lo reconoce y traduce al idioma destino que elijas.
+          </p>
+        </div>
+      </div>
+
+      <div class="reveal reveal-delay-1">
+        <h3 style="margin-bottom:16px">Tres niveles de calidad</h3>
+        <table class="quality-table">
+          <thead>
+            <tr>
+              <th>Modo</th>
+              <th>Motor</th>
+              <th>Latencia</th>
+              <th>Costo</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="pill pill-g">Local</span></td>
+              <td style="color:var(--text-2)">Whisper.cpp + Ollama + Piper</td>
+              <td>~10s</td>
+              <td><strong style="color:#4ade80">$0</strong></td>
+            </tr>
+            <tr>
+              <td><span class="pill pill-c">Equilibrado</span></td>
+              <td style="color:var(--text-2)">Whisper.cpp + GPT-4o-mini + edge-tts</td>
+              <td>~2s</td>
+              <td style="color:var(--cyan)">~$0.004</td>
+            </tr>
+            <tr>
+              <td><span class="pill pill-v">Alta calidad</span></td>
+              <td style="color:var(--text-2)">OpenAI STT + GPT-4o + OpenAI TTS</td>
+              <td>~1s</td>
+              <td style="color:var(--violet-lite)">~$0.08</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="margin-top:20px;padding:14px;background:rgba(139,92,246,0.06);border:1px solid var(--border2);border-radius:var(--radius-sm)">
+          <p style="font-size:0.85rem">
+            <strong style="color:var(--violet-lite)">Local-first:</strong> Whisper.cpp corre en tu CPU,
+            Ollama con llama3.2:3b traduce offline, Piper sintetiza voz sin internet.
+            Una sesión de 30 minutos cuesta exactamente cero dólares.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── AUDIO ROUTING ─────────────────────────────────────────────────────── -->
+<section id="routing">
+  <div class="container">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center">
+      <div class="reveal">
+        <div class="tag">Audio · Routing</div>
+        <h2>Tu música.<br>Tu dispositivo.<br><span class="gradient-text">Tu control.</span></h2>
+        <p style="margin:16px 0">
+          Ve en tiempo real qué aplicación está reproduciendo audio y a dónde va.
+          Con un selector, mueve Spotify a los JBL, Netflix al TV y las notificaciones
+          a los bocinas de escritorio — todo sin salir de la app.
+        </p>
+        <ul class="cinema-bullets">
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Routing visual por stream — cada app tiene su propio destino
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Volumen independiente por dispositivo de salida
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            EQ rápido con presets: Plana, Vocal, Bass, Cinema, Voice call
+          </li>
+          <li class="cinema-bullet">
+            <span class="bullet-icon">✓</span>
+            Gestión Bluetooth integrada — conecta, desconecta y empareja sin salir
+          </li>
+        </ul>
+      </div>
+
+      <div class="reveal reveal-delay-1">
+        <div class="routing-mock">
+          <div class="mock-header">
+            <span>🎵</span> streams activos
+          </div>
+          <div class="mock-row">
+            <div class="mock-app">
+              <div class="mock-app-icon">🎵</div>
+              <div>
+                <div style="font-weight:500;font-size:0.875rem">Spotify</div>
+                <div style="font-size:0.75rem;color:var(--text-3)">Danza Kuduro · reproduciendo</div>
+              </div>
+            </div>
+            <div class="mock-sink">🎧 JBL Vive Buds ▾</div>
+          </div>
+          <div class="mock-row">
+            <div class="mock-app">
+              <div class="mock-app-icon">🎬</div>
+              <div>
+                <div style="font-weight:500;font-size:0.875rem">Firefox</div>
+                <div style="font-size:0.75rem;color:var(--text-3)">YouTube · reproduciendo</div>
+              </div>
+            </div>
+            <div class="mock-sink">🖥️ HDMI TV ▾</div>
+          </div>
+          <div class="mock-row">
+            <div class="mock-app">
+              <div class="mock-app-icon">📞</div>
+              <div>
+                <div style="font-weight:500;font-size:0.875rem">Discord</div>
+                <div style="font-size:0.75rem;color:var(--text-3)">llamada activa</div>
+              </div>
+            </div>
+            <div class="mock-sink">💻 Laptop ▾</div>
+          </div>
+          <div class="mock-row">
+            <div class="mock-app">
+              <div class="mock-app-icon">🔔</div>
+              <div>
+                <div style="font-weight:500;font-size:0.875rem">Sistema</div>
+                <div style="font-size:0.75rem;color:var(--text-3)">notificaciones</div>
+              </div>
+            </div>
+            <div class="mock-sink">🔈 Bocinas ▾</div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;padding:14px;background:rgba(13,27,62,0.5);border:1px solid var(--border);border-radius:var(--radius-sm)">
+            <div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">JBL Vive Buds</div>
+            <div style="font-size:0.95rem;font-weight:700;color:var(--cyan)">78%</div>
+            <div style="margin-top:6px;height:4px;background:rgba(255,255,255,0.08);border-radius:2px">
+              <div style="width:78%;height:100%;background:var(--cyan);border-radius:2px"></div>
+            </div>
+          </div>
+          <div style="flex:1;padding:14px;background:rgba(13,27,62,0.5);border:1px solid var(--border);border-radius:var(--radius-sm)">
+            <div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">HDMI TV</div>
+            <div style="font-size:0.95rem;font-weight:700;color:var(--violet-lite)">45%</div>
+            <div style="margin-top:6px;height:4px;background:rgba(255,255,255,0.08);border-radius:2px">
+              <div style="width:45%;height:100%;background:var(--violet);border-radius:2px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── ANC ───────────────────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center">
+
+      <div class="reveal">
+        <div class="tag tag-v">ANC — Cancelación de Ruido</div>
+        <h2>Silencio de $400.<br>Gratis.</h2>
+        <p style="margin-top:16px">
+          Los audífonos con ANC de hardware cuestan una fortuna. audifonospro implementa
+          cancelación de ruido por software con 5 niveles de intensidad — desde filtrado
+          espectral hasta ANC adaptativo LMS con el micrófono de tu laptop como referencia.
+        </p>
+
+        <div class="anc-levels">
+          <div class="anc-level"><span class="lvl-num">0</span>Sin ANC</div>
+          <div class="anc-level active"><span class="lvl-num">1</span>Espectral</div>
+          <div class="anc-level"><span class="lvl-num">2</span>RNNoise</div>
+          <div class="anc-level"><span class="lvl-num">3</span>LMS</div>
+          <div class="anc-level"><span class="lvl-num" style="color:var(--violet-lite)">4+</span>GATT</div>
+        </div>
+
+        <p style="margin-top:0;font-size:0.875rem">
+          El nivel 4 controla el ANC de hardware de tus JBL directamente vía BLE GATT
+          — sin aplicación del fabricante, sin Bluetooth LE restricciones, directamente
+          desde audifonospro.
+        </p>
+      </div>
+
+      <div class="reveal reveal-delay-1">
+        <div class="card" style="margin-bottom:16px">
+          <div class="icon-box">🧠</div>
+          <h4 style="margin-bottom:8px">WebRTC ANC integrado en PipeWire</h4>
+          <p style="font-size:0.875rem">
+            Usa <code style="color:var(--cyan)">libspa-aec-webrtc</code> de PipeWire para crear un
+            micrófono virtual limpio. El mismo algoritmo de cancelación de eco que usa
+            Google Meet, corriendo localmente en tu laptop.
+          </p>
+        </div>
+        <div class="card card-v">
+          <div class="icon-box icon-box-v">⚡</div>
+          <h4 style="margin-bottom:8px">Filtro LMS adaptativo</h4>
+          <p style="font-size:0.875rem">
+            El Least Mean Squares usa el micrófono de la laptop como referencia del ruido
+            y genera la señal anti-ruido en tiempo real. Se adapta al entorno — funciona
+            en cafeterías, oficinas y transporte público.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── LOCAL FIRST ───────────────────────────────────────────────────────── -->
+<section id="local">
+  <div class="container">
+    <div class="tag">Filosofía</div>
+    <h2 style="margin-bottom:12px">Local-first.<br>Tu privacidad, en tu máquina.</h2>
+    <p style="max-width:560px;margin-bottom:48px">
+      Todo el procesamiento ocurre en tu laptop. Sin APIs externas obligatorias,
+      sin datos enviados a terceros, sin cuentas requeridas. La nube es opcional.
+    </p>
+
+    <div class="local-grid">
+      <div class="local-card reveal">
+        <div class="num">$0</div>
+        <h4>Modo completamente offline</h4>
+        <p style="font-size:0.875rem">Whisper.cpp + Ollama (llama3.2:3b) + Piper TTS. Una sesión de traducción
+        de 30 minutos cuesta cero dólares y cero bits de datos personales.</p>
+      </div>
+      <div class="local-card reveal reveal-delay-1">
+        <div class="num num-v">100%</div>
+        <h4>Código abierto y auditable</h4>
+        <p style="font-size:0.875rem">Cada línea de código es visible. Sin telemetría, sin analytics,
+        sin actualizaciones silenciosas. Sabes exactamente qué hace con tu audio.</p>
+      </div>
+      <div class="local-card reveal reveal-delay-2">
+        <div class="num">3</div>
+        <h4>Modelos de IA locales incluidos</h4>
+        <p style="font-size:0.875rem">Ollama con llama3:8b, llama3.2:3b y gemma2:2b. Todos funcionan
+        sin GPU. Traducción real sin internet en ~6-8 segundos por frase.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── TECH STACK ────────────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="grid-2" style="gap:64px;align-items:start">
+      <div class="reveal">
+        <div class="tag">Stack tecnológico</div>
+        <h2>Construido sobre<br>el mejor stack de Linux.</h2>
+        <p style="margin-top:16px;margin-bottom:24px">
+          No hay wrappers ni abstracciones innecesarias. Cada tecnología fue elegida
+          porque es la mejor para su tarea específica en el ecosistema Linux moderno.
+        </p>
+
+        <div class="tech-pills">
+          <span class="tech-pill">Python 3.14</span>
+          <span class="tech-pill">GTK4 + libadwaita</span>
+          <span class="tech-pill">GStreamer 1.26</span>
+          <span class="tech-pill">PipeWire 1.4</span>
+          <span class="tech-pill tech-pill-v">Whisper.cpp</span>
+          <span class="tech-pill tech-pill-v">Ollama</span>
+          <span class="tech-pill tech-pill-v">Piper TTS</span>
+          <span class="tech-pill">Bleak BLE</span>
+          <span class="tech-pill">Pydantic Settings</span>
+          <span class="tech-pill tech-pill-v">edge-tts</span>
+          <span class="tech-pill">bluetoothctl</span>
+          <span class="tech-pill">pactl</span>
+        </div>
+      </div>
+
+      <div class="reveal reveal-delay-1">
+        <h3 style="margin-bottom:16px;font-size:1rem;color:var(--text-2);font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Arquitectura del pipeline de traducción</h3>
+        <div class="arch-block">
+<span class="dim">── Hilo de captura ──────────────────────────</span>
+<span class="c">GStreamer pulsesrc</span> (mic JBL / laptop / ANC)
+  → <span class="c">appsink</span> (chunks 16kHz S16LE)
+  → <span class="g">VAD</span> (energía RMS + zero-crossing)
+  → <span class="c">Queue[raw]</span> (maxsize=10)
+
+<span class="dim">── Hilo STT ──────────────────────────────────</span>
+<span class="c">Queue[raw]</span> → <span class="v">Whisper.cpp / OpenAI</span>
+  → segmento de texto
+  → <span class="c">Queue[segment]</span> (maxsize=3)
+
+<span class="dim">── Hilo de traducción ───────────────────────</span>
+<span class="c">Queue[segment]</span> → <span class="v">Ollama / GPT-4o-mini</span>
+  → texto traducido
+  → <span class="c">Queue[tts]</span> (maxsize=5)
+
+<span class="dim">── Hilo TTS ──────────────────────────────────</span>
+<span class="c">Queue[tts]</span> → <span class="v">Piper / edge-tts / OpenAI</span>
+  → audio bytes
+  → <span class="g">pulsesink</span> (dispositivo destino)
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── ROADMAP ───────────────────────────────────────────────────────────── -->
+<section id="roadmap">
+  <div class="container">
+    <div class="tag">Roadmap</div>
+    <h2 style="margin-bottom:12px">Lo que viene.</h2>
+    <p style="max-width:480px">
+      audifonospro es un sistema vivo. Cada fase agrega capacidades que multiplican
+      el valor de las anteriores.
+    </p>
+
+    <div class="roadmap-grid">
+      <div class="roadmap-card reveal">
+        <div class="roadmap-phase">Fase actual · v1</div>
+        <h4>Pipeline completo de traducción</h4>
+        <ul class="roadmap-features">
+          <li>STT con Whisper.cpp + auto-detección de idioma</li>
+          <li>Traducción Ollama (local) y GPT-4o-mini</li>
+          <li>TTS con Piper, edge-tts y OpenAI</li>
+          <li>Cinema multi-pista con GStreamer tee</li>
+          <li>GTK4 + libadwaita — UI nativa GNOME</li>
+        </ul>
+      </div>
+
+      <div class="roadmap-card v reveal reveal-delay-1">
+        <div class="roadmap-phase roadmap-phase-v">Próximamente · v2</div>
+        <h4>Perfiles por persona + gestos</h4>
+        <ul class="roadmap-features">
+          <li>Perfiles YAML por persona (EQ, ANC, idioma, dispositivo)</li>
+          <li>Mapeo de botones de audífonos (evdev)</li>
+          <li>Gestos: doble tap → pausa, hold → ANC toggle</li>
+          <li>Cambio automático de perfil por Bluetooth</li>
+          <li>CLI para automatización y scripts</li>
+        </ul>
+      </div>
+
+      <div class="roadmap-card reveal">
+        <div class="roadmap-phase">Futuro · v3</div>
+        <h4>App Android + mesh de audio</h4>
+        <ul class="roadmap-features">
+          <li>App Android — usa el mic del teléfono en el Traductor</li>
+          <li>Micrófonos de audífonos BT del teléfono como fuente</li>
+          <li>Sincronización de audio entre laptop y teléfono</li>
+          <li>WebSocket para control remoto desde cualquier dispositivo</li>
+          <li>ANC auxiliado por micrófono del teléfono</li>
+        </ul>
+      </div>
+
+      <div class="roadmap-card v reveal reveal-delay-1">
+        <div class="roadmap-phase roadmap-phase-v">Visión · v4</div>
+        <h4>Plataforma de audio personal</h4>
+        <ul class="roadmap-features">
+          <li>Plugin system para procesadores de audio custom</li>
+          <li>Sincronización multi-habitación (Chromecast-like, local)</li>
+          <li>Transcripción continua + resumen de reuniones</li>
+          <li>Wake word propio ("Oye audifonos, traduce esto")</li>
+          <li>API pública para integraciones de terceros</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<div class="sep"></div>
+
+
+<!-- ── THE STORY ─────────────────────────────────────────────────────────── -->
+<section id="story">
+  <div class="container">
+    <div class="tag tag-v" style="margin-bottom:32px">La historia</div>
+    <div class="story-card reveal">
+      <p>
+        audifonospro nació de una necesidad real: una noche de cine con familia que habla
+        diferentes idiomas. La solución obvia — múltiples dispositivos con diferentes pistas
+        de audio — no existía de forma simple en ningún sistema operativo.
+      </p>
+      <p>
+        Lo que empezó como un script para enrutar audio en PipeWire creció en un sistema
+        completo. La segunda pregunta fue: si ya tengo el audio capturado y ruteado,
+        ¿por qué no traducirlo también? Así llegó el Traductor. Y si ya puedo traducir,
+        ¿por qué no aplicar cancelación de ruido antes? Así llegó el ANC.
+      </p>
+      <p>
+        Cada problema resuelto reveló el siguiente. El resultado es un sistema que trata
+        el audio de tu laptop como lo que realmente es: infraestructura personal crítica
+        que merece el mismo nivel de control y personalización que cualquier herramienta
+        profesional.
+      </p>
+      <p style="color:var(--text-2)">
+        Construido con Python, GTK4, GStreamer y PipeWire. Desarrollado en Fedora 43.
+        Diseñado para durar. Construido para extenderse.
+      </p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ── CTA ───────────────────────────────────────────────────────────────── -->
+<section class="cta-section">
+  <div class="cta-glow"></div>
+  <div class="container" style="position:relative;z-index:1">
+    <div class="tag" style="margin:0 auto 20px;display:inline-flex">Código abierto</div>
+    <h2>Listo para tomar<br>el control de tu audio.</h2>
+    <p>Una laptop. Tus audífonos. Sin límites.</p>
+    <div class="btns">
+      <a href="https://github.com" class="btn btn-primary">Ver en GitHub ↗</a>
+      <a href="#cinema" class="btn btn-outline">Ver características ↑</a>
+    </div>
+
+    <div style="margin-top:48px;display:flex;justify-content:center;gap:32px;flex-wrap:wrap">
+      <div class="badge"><span class="badge-dot"></span>Fedora 43 · Python 3.14</div>
+      <div class="badge"><span class="badge-dot badge-dot-v"></span>PipeWire 1.4 · GStreamer 1.26</div>
+      <div class="badge"><span class="badge-dot"></span>MIT License</div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ── FOOTER ────────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">
+        <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="fbg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#0d1b3e"/>
+              <stop offset="100%" stop-color="#150d38"/>
+            </linearGradient>
+          </defs>
+          <rect width="128" height="128" rx="26" fill="url(#fbg)"/>
+          <line x1="64" y1="64" x2="64" y2="20" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+          <line x1="64" y1="64" x2="103" y2="48" stroke="#8b5cf6" stroke-width="1.3" opacity="0.45"/>
+          <line x1="64" y1="64" x2="88" y2="100" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+          <line x1="64" y1="64" x2="40" y2="100" stroke="#8b5cf6" stroke-width="1.3" opacity="0.45"/>
+          <line x1="64" y1="64" x2="25" y2="48" stroke="#0db8d8" stroke-width="1.3" opacity="0.45"/>
+          <circle cx="64" cy="20" r="5.5" fill="#0db8d8"/>
+          <circle cx="103" cy="48" r="5" fill="#8b5cf6"/>
+          <circle cx="88" cy="100" r="5.5" fill="#0db8d8"/>
+          <circle cx="40" cy="100" r="5" fill="#8b5cf6"/>
+          <circle cx="25" cy="48" r="5.5" fill="#0db8d8"/>
+          <circle cx="64" cy="64" r="13" fill="#0db8d8"/>
+          <circle cx="64" cy="64" r="5" fill="#e8fbff" opacity="0.8"/>
+        </svg>
+        <span style="font-weight:700;font-size:0.9rem">audifonospro</span>
+      </div>
+      <div class="footer-copy">Construido con Python, GTK4 y mucho PipeWire.</div>
+      <div class="footer-links">
+        <a href="https://github.com">GitHub</a>
+        <a href="#cinema">Cinema</a>
+        <a href="#translator">Traductor</a>
+        <a href="#roadmap">Roadmap</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+<!-- ── SCROLL REVEAL ─────────────────────────────────────────────────────── -->
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>
