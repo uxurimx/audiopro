@@ -68,30 +68,34 @@ class CinemaWindow(Adw.Window):
 
         toolbar.add_top_bar(header)
 
-        # ── Área central — indicador de estado ────────────────────────────
-        # El video se muestra en la ventana nativa de autovideosink (Wayland).
-        # Esta ventana solo controla reproducción/seek/subtítulos.
-        center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        center.set_halign(Gtk.Align.CENTER)
-        center.set_valign(Gtk.Align.CENTER)
-        center.set_hexpand(True)
-        center.set_vexpand(True)
+        # ── Área central — video embebido + overlay de estado ─────────────
+        overlay = Gtk.Overlay()
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
+
+        # Imagen que muestra el video via gtk4paintablesink
+        self._video_picture = Gtk.Picture()
+        self._video_picture.set_keep_aspect_ratio(True)
+        self._video_picture.set_hexpand(True)
+        self._video_picture.set_vexpand(True)
+        overlay.set_child(self._video_picture)
+
+        # Overlay de estado (visible cuando no hay video)
+        self._status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self._status_box.set_halign(Gtk.Align.CENTER)
+        self._status_box.set_valign(Gtk.Align.CENTER)
 
         icon = Gtk.Image.new_from_icon_name("video-display-symbolic")
         icon.set_pixel_size(64)
         icon.add_css_class("dim-label")
-        center.append(icon)
+        self._status_box.append(icon)
 
         self._status_lbl = Gtk.Label(label="Abre un archivo para reproducir")
         self._status_lbl.add_css_class("title-2")
-        center.append(self._status_lbl)
+        self._status_box.append(self._status_lbl)
 
-        hint = Gtk.Label(label="El video aparece en su propia ventana Wayland")
-        hint.add_css_class("dim-label")
-        hint.add_css_class("caption")
-        center.append(hint)
-
-        toolbar.set_content(center)
+        overlay.add_overlay(self._status_box)
+        toolbar.set_content(overlay)
 
         # ── Controles inferiores ───────────────────────────────────────────
         toolbar.add_bottom_bar(self._build_controls())
@@ -197,7 +201,13 @@ class CinemaWindow(Adw.Window):
     # ── API pública ───────────────────────────────────────────────────────
 
     def attach_paintable(self, paintable: object) -> None:
-        pass  # ya no se usa (autovideosink crea su propia ventana)
+        """Conecta el paintable de gtk4paintablesink al widget de video."""
+        if paintable:
+            self._video_picture.set_paintable(paintable)
+            self._status_box.set_visible(False)
+        else:
+            self._video_picture.set_paintable(None)
+            self._status_box.set_visible(True)
 
     def set_file(self, path: str) -> None:
         self._video_path = path
@@ -217,10 +227,12 @@ class CinemaWindow(Adw.Window):
 
     def set_playing(self, playing: bool) -> None:
         self._play_btn.set_label("⏸" if playing else "▶")
-        self._status_lbl.set_text(
-            os.path.basename(self._video_path or "") if playing else
-            ("Pausado" if self._video_path else "Abre un archivo para reproducir")
-        )
+        # La etiqueta de estado se muestra sólo cuando no hay video
+        if not self._video_picture.get_paintable():
+            self._status_lbl.set_text(
+                os.path.basename(self._video_path or "") if playing else
+                ("Pausado" if self._video_path else "Abre un archivo para reproducir")
+            )
         if playing and self._timer_id == 0:
             self._timer_id = GLib.timeout_add(400, self._update_progress)
         elif not playing and self._timer_id:

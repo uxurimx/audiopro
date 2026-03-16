@@ -165,21 +165,32 @@ class CinemaRouter:
 
     # ── Reproducción ─────────────────────────────────────────────────────
 
-    def prepare_video_sink(self) -> tuple[None, None]:
-        """Obsoleto — el video lo maneja MpvPlayer. Mantiene compatibilidad."""
-        return None, None
+    def prepare_video_sink(self) -> tuple[object | None, object | None]:
+        """
+        Crea gtk4paintablesink y devuelve (sink, paintable).
+
+        Llamar desde el hilo GTK principal antes de play().
+        Si el elemento no está disponible, devuelve (None, None).
+        """
+        sink = Gst.ElementFactory.make("gtk4paintablesink")
+        if not sink:
+            return None, None
+        paintable = sink.get_property("paintable")
+        return sink, paintable
 
     def play(
         self,
         path: str,
-        show_video: bool = False,   # video lo maneja MpvPlayer externamente
+        show_video: bool = True,
         video_sink: object | None = None,
     ) -> tuple[bool, None]:
         """
-        Construye el pipeline de AUDIO y arranca la reproducción.
+        Construye el pipeline y arranca la reproducción.
 
-        El video se maneja externamente con MpvPlayer (mpv --no-audio).
-        Este pipeline sólo enruta las pistas de audio a los sinks asignados.
+        show_video : si True y video_sink está presente, embebe el video.
+        video_sink : gtk4paintablesink creado por prepare_video_sink().
+                     DEBE haberse creado en el hilo GTK principal.
+                     DEBE añadirse al pipeline ANTES de set_state(PLAYING).
         """
         self.stop()
 
@@ -200,10 +211,14 @@ class CinemaRouter:
         src.set_property("uri", uri)
         pipeline.add(src)
 
-        # Video: manejado externamente por MpvPlayer. GStreamer solo hace audio.
+        # Video: añadir el sink al pipeline ANTES de PLAYING
         self._video_queue: Gst.Element | None = None
         self._video_pipeline_ref = pipeline
-        self._video_sink: Gst.Element | None = None
+        if show_video and video_sink:
+            pipeline.add(video_sink)
+            self._video_sink: Gst.Element | None = video_sink
+        else:
+            self._video_sink = None
 
         # Subtítulos: si hay archivo pre-cargado
         self._sub_pipeline_ready = False
@@ -214,7 +229,7 @@ class CinemaRouter:
 
         self._pipeline = pipeline
         pipeline.set_state(Gst.State.PLAYING)
-        return True, None   # paintable ya no se usa (autovideosink crea su ventana)
+        return True, None
 
     def pause(self) -> None:
         if self._pipeline:

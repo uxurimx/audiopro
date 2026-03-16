@@ -61,12 +61,25 @@ def _generate_config(gains: list[float]) -> str:
 
 # IMPORTANTE: core.daemon = false hace que pipewire arranque como CLIENTE
 # del servidor existente en lugar de intentar ser un segundo servidor.
+# context.spa-libs es necesario para que protocol-native encuentre libspa-support.
 context.properties = {{
   core.daemon = false
   core.name   = audifonospro-eq
+  log.level   = 0
+}}
+
+context.spa-libs = {{
+  audio.convert.* = audioconvert/libspa-audioconvert
+  support.*       = support/libspa-support
 }}
 
 context.modules = [
+  {{ name = libpipewire-module-rt
+    flags = [ ifexists nofail ]
+  }}
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.description = "audifonospro EQ"

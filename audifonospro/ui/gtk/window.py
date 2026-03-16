@@ -76,7 +76,8 @@ class MainWindow(Adw.ApplicationWindow):
             ("mon",    "Monitor",      "utilities-system-monitor-symbolic",          "audifonospro.ui.gtk.pages.monitor_page",    "MonitorPage"),
             ("ctrl",   "Controles",    "input-gaming-symbolic",                     "audifonospro.ui.gtk.pages.controls_page",   "ControlsPage"),
             ("eq",     "EQ",           "multimedia-volume-control-symbolic",         "audifonospro.ui.gtk.pages.eq_page",         "EQPage"),
-            ("trans",  "Traductor",    "microphone-sensitivity-high-symbolic",       "audifonospro.ui.gtk.pages.translator_page", "TranslatorPage"),
+            ("anc",    "ANC",          "microphone-sensitivity-high-symbolic",       "audifonospro.ui.gtk.pages.anc_page",        "ANCPage"),
+            ("trans",  "Traductor",    "microphone-sensitivity-muted-symbolic",      "audifonospro.ui.gtk.pages.translator_page", "TranslatorPage"),
             ("stacks", "Stacks",       "view-app-grid-symbolic",                    "audifonospro.ui.gtk.pages.stacks_page",     "StacksPage"),
             ("cfg",    "Ajustes",      "preferences-system-symbolic",               "audifonospro.ui.gtk.pages.settings_page",   "SettingsPage"),
         ]
