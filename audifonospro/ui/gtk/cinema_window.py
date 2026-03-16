@@ -78,30 +78,30 @@ class CinemaWindow(Adw.Window):
     # ── Construcción UI ───────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        toolbar = Adw.ToolbarView()
-        self.set_content(toolbar)
+        self._toolbar = Adw.ToolbarView()
+        self.set_content(self._toolbar)
 
         # ── Header ────────────────────────────────────────────────────────
-        header = Adw.HeaderBar()
-        header.set_show_back_button(False)
+        self._header = Adw.HeaderBar()
+        self._header.set_show_back_button(False)
 
         self._title_lbl = Gtk.Label(label="Sin archivo")
         self._title_lbl.add_css_class("heading")
         self._title_lbl.set_ellipsize(3)
         self._title_lbl.set_max_width_chars(40)
-        header.set_title_widget(self._title_lbl)
+        self._header.set_title_widget(self._title_lbl)
 
         # Botón subtítulos (popover con 3 opciones)
-        header.pack_end(self._build_sub_menu_btn())
+        self._header.pack_end(self._build_sub_menu_btn())
 
         # Botón fullscreen
         self._fs_btn = Gtk.Button()
         self._fs_btn.set_icon_name("view-fullscreen-symbolic")
         self._fs_btn.set_tooltip_text("Pantalla completa (F)")
         self._fs_btn.connect("clicked", lambda *_: self._toggle_fullscreen())
-        header.pack_end(self._fs_btn)
+        self._header.pack_end(self._fs_btn)
 
-        toolbar.add_top_bar(header)
+        self._toolbar.add_top_bar(self._header)
 
         # ── Área central — video + overlays ───────────────────────────────
         overlay = Gtk.Overlay()
@@ -138,10 +138,11 @@ class CinemaWindow(Adw.Window):
         self._sub_lbl.set_visible(False)
         overlay.add_overlay(self._sub_lbl)
 
-        toolbar.set_content(overlay)
+        self._toolbar.set_content(overlay)
 
         # ── Controles inferiores ───────────────────────────────────────────
-        toolbar.add_bottom_bar(self._build_controls())
+        self._controls_bar = self._build_controls()
+        self._toolbar.add_bottom_bar(self._controls_bar)
 
     def _build_sub_menu_btn(self) -> Gtk.MenuButton:
         btn = Gtk.MenuButton()
@@ -294,13 +295,23 @@ class CinemaWindow(Adw.Window):
 
     def _toggle_fullscreen(self) -> None:
         if self.is_fullscreen():
-            self.unfullscreen()
-            self._fs_btn.set_icon_name("view-fullscreen-symbolic")
-            self._fs_btn.set_tooltip_text("Pantalla completa (F)")
+            self._exit_fullscreen()
         else:
-            self.fullscreen()
-            self._fs_btn.set_icon_name("view-restore-symbolic")
-            self._fs_btn.set_tooltip_text("Salir de pantalla completa (F / Esc)")
+            self._enter_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        self._header.set_visible(False)
+        self._controls_bar.set_visible(False)
+        self._sub_lbl.set_margin_bottom(16)  # más abajo sin barra inferior
+        self.fullscreen()
+        self._fs_btn.set_icon_name("view-restore-symbolic")
+
+    def _exit_fullscreen(self) -> None:
+        self.unfullscreen()
+        self._header.set_visible(True)
+        self._controls_bar.set_visible(True)
+        self._sub_lbl.set_margin_bottom(32)
+        self._fs_btn.set_icon_name("view-fullscreen-symbolic")
 
     # ── Progreso + subtítulos ─────────────────────────────────────────────
 
@@ -396,8 +407,7 @@ class CinemaWindow(Adw.Window):
                 self._toggle_fullscreen()
             case Gdk.KEY_Escape:
                 if self.is_fullscreen():
-                    self.unfullscreen()
-                    self._fs_btn.set_icon_name("view-fullscreen-symbolic")
+                    self._exit_fullscreen()
                 else:
                     self.set_visible(False)
             case Gdk.KEY_Left:
@@ -476,13 +486,27 @@ _TS_SHORT = re.compile(
 _TAG      = re.compile(r"<[^>]+>|\{[^}]+\}")   # HTML + ASS tags
 
 
+def _read_subtitle_file(path: str) -> str:
+    """
+    Lee el archivo intentando varias codificaciones en orden.
+    Muchos .srt en español están en latin-1/cp1252, no en UTF-8.
+    """
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return open(path, encoding=enc).read()
+        except (UnicodeDecodeError, LookupError):
+            continue
+    # Último recurso: latin-1 siempre funciona (cada byte es un carácter válido)
+    return open(path, encoding="latin-1").read()
+
+
 def _parse_subtitles(path: str) -> list[tuple[int, int, str]]:
     """
     Parser de subtítulos para .srt, .vtt y .ass básico.
     Devuelve [(start_ns, end_ns, text), ...] ordenado por tiempo.
     """
     try:
-        content = open(path, encoding="utf-8-sig", errors="replace").read()
+        content = _read_subtitle_file(path)
     except Exception:
         return []
 
