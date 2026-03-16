@@ -413,11 +413,8 @@ class DevicesPage(Adw.PreferencesPage):
         idx = dd.get_selected()
         if idx < len(sink_names):
             from audifonospro.cinema.gst_router import get_router
-            sink = sink_names[idx]
-            if sink:
-                get_router().assign(track_idx, sink)
-            else:
-                get_router().clear_assignments()  # simplificación: reset si "Sin audio"
+            # sink_names[0] == None → "Sin audio" → hot-swap a fakesink
+            get_router().assign(track_idx, sink_names[idx])
 
     def _get_cinema_window(self):
         """Crea o reutiliza la ventana de Cinema."""

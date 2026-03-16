@@ -148,10 +148,23 @@ class CinemaRouter:
 
     # ── Asignación de pistas ──────────────────────────────────────────────
 
-    def assign(self, track_index: int, sink_name: str) -> None:
-        """Asigna una pista de audio a un dispositivo de salida."""
+    def assign(self, track_index: int, sink_name: str | None) -> None:
+        """
+        Asigna una pista de audio a un dispositivo de salida.
+        Si el pipeline está activo, hace el cambio en tiempo real (hot-swap).
+        sink_name=None → silenciar esa pista (fakesink).
+        """
         with self._lock:
-            self._assignments[track_index] = sink_name
+            if sink_name is not None:
+                self._assignments[track_index] = sink_name
+            else:
+                self._assignments.pop(track_index, None)
+        if self._pipeline:
+            threading.Thread(
+                target=self._hot_swap_sink,
+                args=(track_index, sink_name),
+                daemon=True,
+            ).start()
 
     def clear_assignments(self) -> None:
         with self._lock:
@@ -299,6 +312,62 @@ class CinemaRouter:
         # La pista de texto se conecta dinámicamente en _on_pad_added
         # Aquí guardamos el path para la próxima reproducción
         return False
+
+    def _hot_swap_sink(self, track_index: int, sink_name: str | None) -> None:
+        """
+        Cambia el sink de una pista en tiempo real (corre en hilo worker).
+
+        Estrategia segura: pausar el pipeline → modificar → reanudar.
+        Evita el deadlock de llamar set_state(NULL) desde dentro de un probe
+        callback (el probe bloquea el streaming thread, y set_state espera
+        que el streaming thread termine → deadlock).
+        """
+        pipeline = self._pipeline
+        if not pipeline:
+            return
+
+        resample = pipeline.get_by_name(f"res_{track_index}")
+        if not resample:
+            return
+
+        src_pad = resample.get_static_pad("src")
+        if not src_pad or not src_pad.is_linked():
+            return
+
+        # Pausar pipeline para modificar la estructura de forma segura
+        was_playing = pipeline.get_state(0).state == Gst.State.PLAYING
+        pipeline.set_state(Gst.State.PAUSED)
+        pipeline.get_state(3 * Gst.SECOND)  # esperar a PAUSED
+
+        # Desenlazar y eliminar sink actual
+        peer = src_pad.get_peer()
+        if peer:
+            src_pad.unlink(peer)
+            old_elem = peer.get_parent_element()
+            if old_elem:
+                old_elem.set_state(Gst.State.NULL)
+                pipeline.remove(old_elem)
+
+        # Crear y enlazar nuevo sink
+        if sink_name:
+            new_out = Gst.ElementFactory.make("pulsesink", f"out_{track_index}")
+            if new_out:
+                new_out.set_property("device", sink_name)
+            else:
+                new_out = Gst.ElementFactory.make("fakesink", f"fake_{track_index}")
+        else:
+            new_out = Gst.ElementFactory.make("fakesink", f"fake_{track_index}")
+
+        if new_out:
+            pipeline.add(new_out)
+            sink_pad = new_out.get_static_pad("sink")
+            if sink_pad:
+                src_pad.link(sink_pad)
+            new_out.sync_state_with_parent()
+
+        # Reanudar si estaba reproduciendo
+        if was_playing:
+            pipeline.set_state(Gst.State.PLAYING)
 
     def _on_pad_added(
         self,

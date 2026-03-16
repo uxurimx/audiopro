@@ -4,7 +4,9 @@ Ventana de Cinema Mode.
 Features:
   - Video embebido via gtk4paintablesink (GTK4/Wayland nativo)
   - Barra de progreso con seek (drag → seek al soltar)
-  - Pantalla completa: botón ⛶ en header + tecla F
+  - Pantalla completa: botón ⛶ en header + tecla F + doble clic en video
+  - Auto-ocultar controles en fullscreen (reaparecen con movimiento del ratón)
+  - Clic simple en video → pause/reanudar  · Doble clic → fullscreen
   - Subtítulos renderizados como overlay GTK4 sobre el video:
       · Cargar archivo local (.srt / .vtt / .ass)
       · Buscar y descargar desde OpenSubtitles (sin pip, xmlrpc stdlib)
@@ -25,8 +27,8 @@ from gi.repository import Adw, Gtk, Gst, GLib, Gio, Gdk
 
 GST_SECOND = 1_000_000_000
 
-# ── CSS para subtítulos ───────────────────────────────────────────────────────
-_SUB_CSS = b"""
+# ── CSS ────────────────────────────────────────────────────────────────────────
+_CSS = b"""
 .cinema-sub {
     color: white;
     font-size: 22px;
@@ -36,6 +38,9 @@ _SUB_CSS = b"""
     background-color: rgba(0,0,0,0.55);
     padding: 4px 16px;
     border-radius: 6px;
+}
+.fs-controls {
+    background-color: rgba(0,0,0,0.72);
 }
 """
 
@@ -60,6 +65,13 @@ class CinemaWindow(Adw.Window):
         self._subtitles:      list[tuple[int, int, str]] = []
         self._sub_file:       str | None = None
 
+        # Fullscreen auto-hide
+        self._fs_hide_timer:  int = 0
+        self._last_mouse_pos: tuple[float, float] = (-999.0, -999.0)
+
+        # Delay para distinguir clic simple de doble clic
+        self._click_pending_id: int = 0
+
         self._apply_css()
         self._build_ui()
         self._bind_keys()
@@ -68,7 +80,7 @@ class CinemaWindow(Adw.Window):
 
     def _apply_css(self) -> None:
         provider = Gtk.CssProvider()
-        provider.load_from_data(_SUB_CSS)
+        provider.load_from_data(_CSS)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(),
             provider,
@@ -91,10 +103,8 @@ class CinemaWindow(Adw.Window):
         self._title_lbl.set_max_width_chars(40)
         self._header.set_title_widget(self._title_lbl)
 
-        # Botón subtítulos (popover con 3 opciones)
         self._header.pack_end(self._build_sub_menu_btn())
 
-        # Botón fullscreen
         self._fs_btn = Gtk.Button()
         self._fs_btn.set_icon_name("view-fullscreen-symbolic")
         self._fs_btn.set_tooltip_text("Pantalla completa (F)")
@@ -114,7 +124,7 @@ class CinemaWindow(Adw.Window):
         self._video_picture.set_vexpand(True)
         overlay.set_child(self._video_picture)
 
-        # Placeholder (sin video cargado)
+        # Placeholder
         self._status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self._status_box.set_halign(Gtk.Align.CENTER)
         self._status_box.set_valign(Gtk.Align.CENTER)
@@ -127,7 +137,7 @@ class CinemaWindow(Adw.Window):
         self._status_box.append(self._status_lbl)
         overlay.add_overlay(self._status_box)
 
-        # Subtítulos (centrado abajo del video)
+        # Subtítulos
         self._sub_lbl = Gtk.Label(label="")
         self._sub_lbl.add_css_class("cinema-sub")
         self._sub_lbl.set_halign(Gtk.Align.CENTER)
@@ -138,11 +148,103 @@ class CinemaWindow(Adw.Window):
         self._sub_lbl.set_visible(False)
         overlay.add_overlay(self._sub_lbl)
 
+        # Controles flotantes fullscreen
+        self._fs_overlay_bar = self._build_fs_overlay_bar()
+        overlay.add_overlay(self._fs_overlay_bar)
+
         self._toolbar.set_content(overlay)
 
-        # ── Controles inferiores ───────────────────────────────────────────
+        # ── Controles inferiores (visibles fuera de fullscreen) ────────────
         self._controls_bar = self._build_controls()
         self._toolbar.add_bottom_bar(self._controls_bar)
+
+        # ── Gestos ────────────────────────────────────────────────────────
+
+        # Clic simple → pause · Doble clic → fullscreen
+        click = Gtk.GestureClick()
+        click.set_button(1)
+        click.connect("pressed", self._on_video_click)
+        self._video_picture.add_controller(click)
+
+        # Movimiento de ratón → mostrar controles en fullscreen
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_mouse_motion)
+        self.add_controller(motion)
+
+    def _build_fs_overlay_bar(self) -> Gtk.Widget:
+        """Barra de controles flotante para fullscreen (aparece al mover el ratón)."""
+        bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        bar.add_css_class("fs-controls")
+        bar.set_halign(Gtk.Align.FILL)
+        bar.set_valign(Gtk.Align.END)
+        bar.set_visible(False)
+
+        # Progreso
+        prog_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        prog_row.set_margin_start(16); prog_row.set_margin_end(16)
+        prog_row.set_margin_top(10)
+
+        self._fs_pos_label = Gtk.Label(label="0:00")
+        self._fs_pos_label.add_css_class("numeric")
+        self._fs_pos_label.set_width_chars(5)
+        prog_row.append(self._fs_pos_label)
+
+        self._fs_progress = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        self._fs_progress.set_range(0, 1)
+        self._fs_progress.set_draw_value(False)
+        self._fs_progress.set_hexpand(True)
+        self._fs_progress.connect("change-value", self._on_change_value)
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", lambda *_: self._start_seek())
+        drag.connect("drag-end",   lambda *_: self._end_seek())
+        self._fs_progress.add_controller(drag)
+        prog_row.append(self._fs_progress)
+
+        self._fs_dur_label = Gtk.Label(label="0:00")
+        self._fs_dur_label.add_css_class("numeric")
+        self._fs_dur_label.set_width_chars(5)
+        prog_row.append(self._fs_dur_label)
+
+        bar.append(prog_row)
+
+        # Botones
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_margin_start(16); btn_row.set_margin_end(16)
+        btn_row.set_margin_top(4); btn_row.set_margin_bottom(16)
+
+        self._fs_play_btn = Gtk.Button(label="⏸")
+        self._fs_play_btn.add_css_class("pill")
+        self._fs_play_btn.connect("clicked", lambda *_: self._pause_toggle())
+        btn_row.append(self._fs_play_btn)
+
+        stop_btn = Gtk.Button(label="⏹")
+        stop_btn.add_css_class("pill")
+        stop_btn.add_css_class("destructive-action")
+        stop_btn.connect("clicked", self._on_stop)
+        btn_row.append(stop_btn)
+
+        back_btn = Gtk.Button(label="⏪ 10s")
+        back_btn.add_css_class("flat")
+        back_btn.connect("clicked", lambda *_: self._seek_relative(-10))
+        btn_row.append(back_btn)
+
+        fwd_btn = Gtk.Button(label="10s ⏩")
+        fwd_btn.add_css_class("flat")
+        fwd_btn.connect("clicked", lambda *_: self._seek_relative(10))
+        btn_row.append(fwd_btn)
+
+        spacer = Gtk.Box(); spacer.set_hexpand(True)
+        btn_row.append(spacer)
+
+        exit_btn = Gtk.Button()
+        exit_btn.set_icon_name("view-restore-symbolic")
+        exit_btn.set_tooltip_text("Salir de pantalla completa (Esc / F)")
+        exit_btn.add_css_class("flat")
+        exit_btn.connect("clicked", lambda *_: self._exit_fullscreen())
+        btn_row.append(exit_btn)
+
+        bar.append(btn_row)
+        return bar
 
     def _build_sub_menu_btn(self) -> Gtk.MenuButton:
         btn = Gtk.MenuButton()
@@ -239,7 +341,6 @@ class CinemaWindow(Adw.Window):
         spacer = Gtk.Box(); spacer.set_hexpand(True)
         btn_row.append(spacer)
 
-        # Estado de subtítulos (dim-label a la derecha)
         self._sub_status = Gtk.Label(label="Sin subtítulos")
         self._sub_status.add_css_class("dim-label")
         self._sub_status.add_css_class("caption")
@@ -279,7 +380,9 @@ class CinemaWindow(Adw.Window):
         self._on_seek_cb = cb
 
     def set_playing(self, playing: bool) -> None:
-        self._play_btn.set_label("⏸" if playing else "▶")
+        lbl = "⏸" if playing else "▶"
+        self._play_btn.set_label(lbl)
+        self._fs_play_btn.set_label(lbl)
         if not self._video_picture.get_paintable():
             self._status_lbl.set_text(
                 os.path.basename(self._video_path or "") if playing else
@@ -302,16 +405,75 @@ class CinemaWindow(Adw.Window):
     def _enter_fullscreen(self) -> None:
         self._header.set_visible(False)
         self._controls_bar.set_visible(False)
-        self._sub_lbl.set_margin_bottom(16)  # más abajo sin barra inferior
+        self._sub_lbl.set_margin_bottom(72)  # espacio sobre controles flotantes
         self.fullscreen()
         self._fs_btn.set_icon_name("view-restore-symbolic")
+        # Mostrar controles brevemente al entrar, luego auto-ocultar
+        self._last_mouse_pos = (-999.0, -999.0)
+        self._show_fs_controls()
 
     def _exit_fullscreen(self) -> None:
         self.unfullscreen()
         self._header.set_visible(True)
         self._controls_bar.set_visible(True)
+        self._fs_overlay_bar.set_visible(False)
+        if self._fs_hide_timer:
+            GLib.source_remove(self._fs_hide_timer)
+            self._fs_hide_timer = 0
         self._sub_lbl.set_margin_bottom(32)
         self._fs_btn.set_icon_name("view-fullscreen-symbolic")
+        # Restaurar cursor
+        self.set_cursor(None)
+
+    def _show_fs_controls(self) -> None:
+        """Muestra controles flotantes, restaura cursor, inicia timer de 5s."""
+        self._fs_overlay_bar.set_visible(True)
+        self.set_cursor(None)  # cursor visible
+        if self._fs_hide_timer:
+            GLib.source_remove(self._fs_hide_timer)
+        self._fs_hide_timer = GLib.timeout_add(5000, self._auto_hide_fs_controls)
+
+    def _auto_hide_fs_controls(self) -> bool:
+        self._fs_hide_timer = 0
+        self._fs_overlay_bar.set_visible(False)
+        # Ocultar cursor (Wayland: "none" cursor)
+        self.set_cursor(Gdk.Cursor.new_from_name("none", None))
+        return False
+
+    # ── Gestos ────────────────────────────────────────────────────────────
+
+    def _on_mouse_motion(
+        self, _ctrl: Gtk.EventControllerMotion, x: float, y: float
+    ) -> None:
+        if not self.is_fullscreen():
+            return
+        # Filtrar eventos espurios de Wayland: solo reaccionar si el puntero
+        # realmente se movió más de 3 píxeles desde la última posición registrada
+        lx, ly = self._last_mouse_pos
+        if abs(x - lx) < 3 and abs(y - ly) < 3:
+            return
+        self._last_mouse_pos = (x, y)
+        self._show_fs_controls()
+
+    def _on_video_click(
+        self, _gesture: Gtk.GestureClick, n_press: int, x: float, y: float
+    ) -> None:
+        if n_press == 1:
+            # Esperar brevemente para ver si viene un doble clic
+            if self._click_pending_id:
+                GLib.source_remove(self._click_pending_id)
+            self._click_pending_id = GLib.timeout_add(250, self._do_single_click)
+        elif n_press == 2:
+            # Cancelar el clic simple y hacer fullscreen
+            if self._click_pending_id:
+                GLib.source_remove(self._click_pending_id)
+                self._click_pending_id = 0
+            self._toggle_fullscreen()
+
+    def _do_single_click(self) -> bool:
+        self._click_pending_id = 0
+        self._pause_toggle()
+        return False
 
     # ── Progreso + subtítulos ─────────────────────────────────────────────
 
@@ -321,11 +483,17 @@ class CinemaWindow(Adw.Window):
         pos = router.position_ns
         dur = router.duration_ns
         if dur > 0 and not self._seeking:
-            self._progress.handler_block_by_func(self._on_change_value)
-            self._progress.set_value(pos / dur)
-            self._progress.handler_unblock_by_func(self._on_change_value)
-            self._pos_label.set_text(_fmt_time(pos))
-            self._dur_label.set_text(_fmt_time(dur))
+            frac = pos / dur
+            for scale in (self._progress, self._fs_progress):
+                scale.handler_block_by_func(self._on_change_value)
+                scale.set_value(frac)
+                scale.handler_unblock_by_func(self._on_change_value)
+            t = _fmt_time(pos)
+            d = _fmt_time(dur)
+            self._pos_label.set_text(t)
+            self._dur_label.set_text(d)
+            self._fs_pos_label.set_text(t)
+            self._fs_dur_label.set_text(d)
         self._tick_subtitles(pos)
         return True
 
@@ -368,7 +536,9 @@ class CinemaWindow(Adw.Window):
         if dur <= 0:
             return False
         if self._seeking:
-            self._pos_label.set_text(_fmt_time(int(max(0.0, min(1.0, value)) * dur)))
+            t = _fmt_time(int(max(0.0, min(1.0, value)) * dur))
+            self._pos_label.set_text(t)
+            self._fs_pos_label.set_text(t)
             self._pending_seek = value
         else:
             pos_ns = int(max(0.0, min(1.0, value)) * dur)
@@ -496,7 +666,6 @@ def _read_subtitle_file(path: str) -> str:
             return open(path, encoding=enc).read()
         except (UnicodeDecodeError, LookupError):
             continue
-    # Último recurso: latin-1 siempre funciona (cada byte es un carácter válido)
     return open(path, encoding="latin-1").read()
 
 
@@ -518,7 +687,6 @@ def _parse_subtitles(path: str) -> list[tuple[int, int, str]]:
         if not lines:
             continue
         for i, line in enumerate(lines):
-            # Ignorar líneas de encabezado VTT / número de secuencia SRT
             m = _TS_LONG.search(line)
             if m:
                 h1,m1,s1,ms1 = int(m[1]),int(m[2]),int(m[3]),int(m[4])
