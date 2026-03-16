@@ -1,0 +1,90 @@
+# audifonospro — configuración principal
+# Edita este archivo para ajustar el comportamiento del sistema.
+# Las variables de entorno (en .env) tienen prioridad sobre este archivo.
+
+audio:
+  # "auto" usa el dispositivo por defecto del sistema.
+  # Puedes usar nombre parcial del dispositivo: "JBL", "jack", "Built-in"
+  input_device: "auto"
+  output_device: "auto"
+  sample_rate: 48000
+  buffer_ms: 30
+  channels: 1
+
+bluetooth:
+  auto_reconnect: true
+  preferred_codec: "aac"           # sbc | aac | aptx | ldac
+  mic_profile: "headset-head-unit" # HFP con mSBC codec (16kHz)
+  music_profile: "a2dp-sink"       # A2DP alta calidad
+  restore_profile_on_exit: true
+
+anc:
+  default_level: 1        # 0=off 1=spectral 2=rnnoise 3=lms 4=hardware 5=hybrid
+  lms_filter_len: 128     # longitud del filtro adaptativo (muestras)
+  lms_mu: 0.005           # learning rate del filtro LMS
+  spectral_stationary: true
+  # Dispositivo de referencia para ANC nivel 3 (laptop mic)
+  reference_device: "auto"
+
+eq:
+  default_preset: "flat"
+
+vad:
+  silence_threshold_db: -40.0
+  silence_duration_ms: 600
+  min_speech_ms: 300
+  max_speech_ms: 30000
+
+stt:
+  provider: "whisper_cpp"          # whisper_cpp | openai
+  model: "small"                   # tiny | base | small | medium
+  language: "es"                   # hint de idioma fuente
+  whisper_cpp_binary: "~/whisper.cpp/main"
+  whisper_cpp_model: "~/whisper.cpp/models/ggml-small.bin"
+
+translation:
+  provider: "openai"               # openai | ollama
+  model: "gpt-4o-mini"
+  ollama_model: "llama3:8b"
+  ollama_host: "http://localhost:11434"
+  target_language: "English"
+  system_prompt: |
+    Translate the following to {target_language}. Be concise and natural.
+    Preserve tone and register. Output only the translation.
+
+tts:
+  provider: "edge_tts"             # edge_tts | piper | openai
+  edge_tts_voice: "es-MX-JorgeNeural"
+  piper_binary: "~/piper/piper"
+  piper_model: "~/piper/es_MX-claude-medium.onnx"
+  openai_voice: "nova"             # alloy | echo | fable | onyx | nova | shimmer
+  openai_model: "tts-1"            # tts-1 | tts-1-hd
+
+cinema:
+  sync_threshold_ms: 50
+  bt_latency_compensation_ms: 280  # latencia típica A2DP
+  jack_latency_compensation_ms: 15
+  builtin_latency_compensation_ms: 30
+  default_eq_per_device: true
+  # Asignaciones de ejemplo (se sobreescriben desde la UI)
+  # assignments:
+  #   - device: "JBL Vive Buds"
+  #     audio_track: 0
+  #     person: "hija"
+  #   - device: "jack"
+  #     audio_track: 1
+  #     person: "papa"
+  #   - device: "built-in"
+  #     audio_track: 2
+  #     person: "mama"
+
+pipeline:
+  queue_maxsize_raw: 10
+  queue_maxsize_segment: 3
+  queue_maxsize_tts: 5
+  queue_maxsize_audio_out: 10
+
+ui:
+  refresh_rate_ms: 500
+  theme: "dark"
+  log_level: "INFO"
