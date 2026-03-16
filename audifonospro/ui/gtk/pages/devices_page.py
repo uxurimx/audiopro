@@ -1,11 +1,12 @@
 """
-DevicesPage — lista de dispositivos + routing de streams activos.
+AudioPage (DevicesPage) — dispositivos, volumen, streams y EQ rápido.
 
 Secciones:
-  1. Dispositivos de audio  — DeviceRow expandibles con controles BT/EQ
-  2. Streams activos        — qué app está sonando y en qué dispositivo,
-                              con dropdown para cambiar a cualquier sink
-  3. Cinema / MKV           — abrir un archivo MKV y asignar pistas
+  1. EQ rápido              — preset en un clic (sin salir de la pestaña)
+  2. Dispositivos de audio  — DeviceRow expandibles con controles BT
+  3. Volumen                — sliders independientes por dispositivo
+  4. Streams activos        — redirect de apps al vuelo
+  5. Bluetooth              — conectar / emparejar
 """
 from __future__ import annotations
 
@@ -28,8 +29,39 @@ class DevicesPage(Adw.PreferencesPage):
         self._stream_rows: dict[int, _StreamRow] = {}   # serial → widget
         self._running = True
 
-        self.set_title("Dispositivos")
+        self.set_title("Audio")
         self.set_icon_name("audio-headphones-symbolic")
+
+        # ── Sección 0: EQ rápido ──────────────────────────────────────────
+        eq_group = Adw.PreferencesGroup()
+        eq_group.set_title("Ecualizador")
+        self.add(eq_group)
+
+        eq_row = Adw.ActionRow()
+        eq_row.set_title("Preset rápido")
+        eq_row.set_subtitle("Aplica un preset al sink 'audifonospro EQ' en PipeWire")
+        self._eq_status_label = Gtk.Label(label="─")
+        self._eq_status_label.add_css_class("dim-label")
+        self._eq_status_label.set_valign(Gtk.Align.CENTER)
+        eq_row.add_suffix(self._eq_status_label)
+
+        _eq_presets = ["Plana", "Vocal clarity", "Bass boost", "Cinema", "Voice call"]
+        _eq_gains = {
+            "Plana":         [ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0],
+            "Vocal clarity": [-2, -1,  0,  2,  4,  5,  4,  3,  2,  1],
+            "Bass boost":    [ 6,  5,  4,  2,  0,  0,  0,  0,  0,  0],
+            "Cinema":        [ 3,  2,  1,  0,  0,  1,  2,  2,  1,  0],
+            "Voice call":    [-3, -3,  0,  3,  5,  5,  4,  2,  0, -2],
+        }
+        self._eq_gains_map = _eq_gains
+
+        eq_model = Gtk.StringList.new(_eq_presets)
+        self._eq_dd = Gtk.DropDown(model=eq_model)
+        self._eq_dd.set_valign(Gtk.Align.CENTER)
+        self._eq_dd.connect("notify::selected", self._on_eq_preset_changed)
+        eq_row.add_suffix(self._eq_dd)
+        eq_row.set_activatable_widget(self._eq_dd)
+        eq_group.add(eq_row)
 
         # ── Sección 1: Dispositivos ───────────────────────────────────────
         self._dev_group = Adw.PreferencesGroup()
@@ -77,15 +109,6 @@ class DevicesPage(Adw.PreferencesPage):
         self._bt_status_row.set_title("Dispositivos emparejados")
         self._bt_status_row.set_subtitle("Usa 'Escanear' para buscar nuevos")
         self._bt_group.add(self._bt_status_row)
-
-        # ── Sección 4: Cinema / MKV ───────────────────────────────────────
-        self._cinema_group = Adw.PreferencesGroup()
-        self._cinema_group.set_title("Cinema — abrir archivo")
-        self._cinema_group.set_description(
-            "Carga un MKV/MP4 y asigna cada pista de audio a un dispositivo distinto"
-        )
-        self.add(self._cinema_group)
-        self._build_cinema_row()
 
         # Arrancar polling
         threading.Thread(target=self._poll_loop, daemon=True).start()
@@ -180,52 +203,24 @@ class DevicesPage(Adw.PreferencesPage):
 
         return False
 
-    def _build_cinema_row(self) -> None:
-        # Fila: selector de archivo
-        file_row = Adw.ActionRow()
-        file_row.set_title("Archivo de video")
-        self._mkv_path_label = Gtk.Label(label="Ningún archivo seleccionado")
-        self._mkv_path_label.add_css_class("dim-label")
-        self._mkv_path_label.set_ellipsize(3)
-        self._mkv_path_label.set_max_width_chars(28)
-        self._mkv_path_label.set_valign(Gtk.Align.CENTER)
-        file_row.add_suffix(self._mkv_path_label)
+    # ── EQ rápido ─────────────────────────────────────────────────────────
 
-        open_btn = Gtk.Button(label="Abrir…")
-        open_btn.set_valign(Gtk.Align.CENTER)
-        open_btn.add_css_class("flat")
-        open_btn.connect("clicked", self._on_open_mkv)
-        file_row.add_suffix(open_btn)
-        self._cinema_group.add(file_row)
+    def _on_eq_preset_changed(self, dd: Gtk.DropDown, _param: object) -> None:
+        item = dd.get_selected_item()
+        if item is None:
+            return
+        name = item.get_string()
+        gains = self._eq_gains_map.get(name, [0] * 10)
+        self._eq_status_label.set_text("Aplicando…")
+        threading.Thread(target=self._apply_eq, args=(gains, name), daemon=True).start()
 
-        # Fila: controles de reproducción (ocultos hasta abrir archivo)
-        ctrl_row = Adw.ActionRow()
-        ctrl_row.set_title("Reproducción")
-        ctrl_row.set_visible(False)
-        self._cinema_ctrl_row = ctrl_row
-
-        ctrl_box = Gtk.Box(spacing=8)
-        ctrl_box.set_valign(Gtk.Align.CENTER)
-
-        self._cinema_play_btn = Gtk.Button(label="▶  Reproducir")
-        self._cinema_play_btn.add_css_class("suggested-action")
-        self._cinema_play_btn.connect("clicked", self._on_cinema_play)
-        ctrl_box.append(self._cinema_play_btn)
-
-        stop_btn = Gtk.Button(label="⏹")
-        stop_btn.add_css_class("destructive-action")
-        stop_btn.connect("clicked", self._on_cinema_stop)
-        ctrl_box.append(stop_btn)
-
-        ctrl_row.add_suffix(ctrl_box)
-        self._cinema_group.add(ctrl_row)
-
-        # Pistas de audio (se generan dinámicamente al abrir el archivo)
-        self._cinema_track_rows: list[Adw.ActionRow] = []
-        self._cinema_path: str | None = None
-
-        # gtk4paintablesink — se crea justo antes de reproducir (hilo GTK main)
-        self._video_sink = None
+    def _apply_eq(self, gains: list, preset_name: str) -> None:
+        from audifonospro.eq.pipewire_eq import get_eq
+        ok, _ = get_eq().apply(gains)
+        GLib.idle_add(
+            self._eq_status_label.set_text,
+            f"✓ {preset_name}" if ok else "Error",
+        )
 
     # ── Polling ───────────────────────────────────────────────────────────
 
@@ -318,187 +313,6 @@ class DevicesPage(Adw.PreferencesPage):
             self._refresh_streams(list_sink_inputs(), list_sinks())
         except Exception:
             pass
-
-    def _on_open_mkv(self, _btn: Gtk.Button) -> None:
-        from gi.repository import Gio
-        dialog = Gtk.FileDialog()
-        dialog.set_title("Abrir archivo de video")
-
-        f = Gtk.FileFilter()
-        f.set_name("Video (MKV, MP4, AVI)")
-        for pat in ["*.mkv", "*.mp4", "*.avi", "*.mov", "*.webm"]:
-            f.add_pattern(pat)
-
-        store = Gio.ListStore.new(Gtk.FileFilter)
-        store.append(f)
-        dialog.set_filters(store)
-        dialog.open(self.get_root(), None, self._on_mkv_chosen)
-
-    def _on_mkv_chosen(self, dialog: Gtk.FileDialog, result: object) -> None:
-        try:
-            gfile = dialog.open_finish(result)
-            path = gfile.get_path()
-        except Exception:
-            return
-
-        import os
-        self._mkv_path_label.set_text(os.path.basename(path))
-        self._cinema_path = path
-        self._mkv_path_label.set_tooltip_text(path)
-
-        # Descubrir pistas en hilo worker
-        threading.Thread(target=self._discover_tracks, args=(path,), daemon=True).start()
-
-    def _discover_tracks(self, path: str) -> None:
-        try:
-            from audifonospro.cinema.gst_router import get_router
-            tracks = get_router().discover(path)
-        except Exception as exc:
-            GLib.idle_add(self._on_tracks_error, str(exc))
-            return
-        GLib.idle_add(self._on_tracks_found, tracks)
-
-    def _on_tracks_error(self, msg: str) -> bool:
-        self._mkv_path_label.set_text(f"Error: {msg[:40]}")
-        return False
-
-    def _on_tracks_found(self, tracks: list) -> bool:
-        # Eliminar filas de pistas anteriores
-        for row in self._cinema_track_rows:
-            self._cinema_group.remove(row)
-        self._cinema_track_rows.clear()
-
-        # Obtener sinks disponibles para los dropdowns
-        from audifonospro.audio.routing import list_sinks
-        sinks = list_sinks()
-        sink_labels = ["─ Sin audio"] + [
-            f"{s['description'] or s['name']}  [{s['state']}]" for s in sinks
-        ]
-        sink_names = [None] + [s["name"] for s in sinks]
-
-        for track in tracks:
-            row = Adw.ActionRow()
-            row.set_title(track.label)
-            row.set_subtitle(f"Pista {track.index}  ·  {track.sample_rate // 1000} kHz")
-
-            model = Gtk.StringList.new(sink_labels)
-            dd = Gtk.DropDown(model=model)
-            dd.set_valign(Gtk.Align.CENTER)
-
-            # Conectar la señal ANTES de set_selected para que la auto-asignación
-            # dispare _on_track_sink_selected y llame a router.assign()
-            dd.connect("notify::selected", self._on_track_sink_selected,
-                       track.index, sink_names)
-
-            # Auto-asignar: pista 0 → primer sink disponible, pista 1 → segundo
-            if track.index == 0 and len(sink_names) > 1:
-                dd.set_selected(1)
-            elif track.index == 1 and len(sink_names) > 2:
-                dd.set_selected(2)
-            else:
-                dd.set_selected(0)
-            row.add_suffix(dd)
-            row.set_activatable_widget(dd)
-            self._cinema_group.add(row)
-            self._cinema_track_rows.append(row)
-
-        # Mostrar controles
-        self._cinema_ctrl_row.set_visible(True)
-        self._cinema_ctrl_row.set_subtitle(f"{len(tracks)} pista(s) de audio detectadas")
-        return False
-
-    def _on_track_sink_selected(
-        self, dd: Gtk.DropDown, _param: object, track_idx: int, sink_names: list
-    ) -> None:
-        idx = dd.get_selected()
-        if idx < len(sink_names):
-            from audifonospro.cinema.gst_router import get_router
-            # sink_names[0] == None → "Sin audio" → hot-swap a fakesink
-            get_router().assign(track_idx, sink_names[idx])
-
-    def _get_cinema_window(self):
-        """Crea o reutiliza la ventana de Cinema."""
-        if not hasattr(self, "_cinema_win") or self._cinema_win is None:
-            from audifonospro.ui.gtk.cinema_window import CinemaWindow
-            self._cinema_win = CinemaWindow(application=self.get_root().get_application())
-            self._cinema_win.set_on_pause(self._on_cinema_pause_from_window)
-            self._cinema_win.set_on_stop(self._on_cinema_stop_from_window)
-            # seek_cb no necesario: GStreamer maneja seek internamente
-        return self._cinema_win
-
-    def _on_cinema_play(self, _btn: Gtk.Button) -> None:
-        from audifonospro.cinema.gst_router import get_router
-        router = get_router()
-
-        if router.is_playing:
-            router.pause()
-            self._cinema_play_btn.set_label("▶  Reanudar")
-            if hasattr(self, "_cinema_win") and self._cinema_win:
-                self._cinema_win.set_playing(False)
-        elif self._cinema_path:
-            import gi; gi.require_version("Gst", "1.0")
-            from gi.repository import Gst
-            state = router._pipeline.get_state(0).state if router._pipeline else None
-            if state == Gst.State.PAUSED:
-                router.pause()   # toggle → PLAYING
-                self._cinema_play_btn.set_label("⏸  Pausar")
-                if hasattr(self, "_cinema_win") and self._cinema_win:
-                    self._cinema_win.set_playing(True)
-            else:
-                # Arranque inicial — preparar video sink en hilo GTK antes de play()
-                router.set_on_eos(self._on_cinema_eos)
-                router.set_on_error(self._on_cinema_error)
-
-                vsink, paintable = router.prepare_video_sink()
-
-                win = self._get_cinema_window()
-                win.set_file(self._cinema_path)
-                win.attach_paintable(paintable)
-                win.present()
-
-                ok, _ = router.play(
-                    self._cinema_path,
-                    show_video=(vsink is not None),
-                    video_sink=vsink,
-                )
-                if ok:
-                    self._cinema_play_btn.set_label("⏸  Pausar")
-                    win.set_playing(True)
-                else:
-                    self._cinema_ctrl_row.set_subtitle(
-                        "Asigna al menos una pista antes de reproducir"
-                    )
-
-    def _on_cinema_stop(self, _btn: object) -> None:
-        from audifonospro.cinema.gst_router import get_router
-        get_router().stop()
-        self._cinema_play_btn.set_label("▶  Reproducir")
-        if hasattr(self, "_cinema_win") and self._cinema_win:
-            self._cinema_win.set_visible(False)
-            self._cinema_win.set_playing(False)
-
-    def _on_cinema_pause_from_window(self) -> None:
-        from audifonospro.cinema.gst_router import get_router
-        router = get_router()
-        router.pause()
-        is_playing = router.is_playing
-        self._cinema_play_btn.set_label("⏸  Pausar" if is_playing else "▶  Reanudar")
-        if hasattr(self, "_cinema_win") and self._cinema_win:
-            self._cinema_win.set_playing(is_playing)
-
-    def _on_cinema_stop_from_window(self) -> None:
-        self._on_cinema_stop(None)
-
-    def _on_cinema_eos(self) -> None:
-        self._cinema_play_btn.set_label("▶  Reproducir")
-        self._cinema_ctrl_row.set_subtitle("Reproducción finalizada")
-        if hasattr(self, "_cinema_win") and self._cinema_win:
-            self._cinema_win.set_visible(False)
-            self._cinema_win.set_playing(False)
-
-    def _on_cinema_error(self, msg: str) -> None:
-        self._cinema_play_btn.set_label("▶  Reproducir")
-        self._cinema_ctrl_row.set_subtitle(f"Error: {msg[:60]}")
 
     def stop_polling(self) -> None:
         self._running = False

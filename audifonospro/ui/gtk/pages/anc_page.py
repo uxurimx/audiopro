@@ -180,11 +180,17 @@ class ANCPage(Adw.PreferencesPage):
         self._stop_btn.set_sensitive(ok)
 
         if ok:
-            device = "audifonospro ANC Mic" if mode == "mic" else "audifonospro Filtro de Ruido"
-            self._status_row.set_subtitle(f"Activo — {device}")
+            if mode == "mic":
+                device = "audifonospro ANC Mic"
+                self._status_row.set_subtitle(
+                    f"Activo — selecciona «{device}» como micrófono en el Traductor"
+                )
+            else:
+                device = "audifonospro Filtro de Ruido"
+                self._status_row.set_subtitle(f"Activo — {device}")
             self._status_row.remove_css_class("error")
         else:
-            self._status_row.set_subtitle(f"Error: {msg}")
+            self._status_row.set_subtitle(f"Error: {msg[:200]}")
             self._status_row.add_css_class("error")
         return False
 

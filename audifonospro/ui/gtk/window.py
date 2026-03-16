@@ -72,14 +72,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _load_pages(self) -> None:
         pages = [
-            ("dev",    "Dispositivos", "audio-headphones-symbolic",                 "audifonospro.ui.gtk.pages.devices_page",    "DevicesPage"),
-            ("mon",    "Monitor",      "utilities-system-monitor-symbolic",          "audifonospro.ui.gtk.pages.monitor_page",    "MonitorPage"),
-            ("ctrl",   "Controles",    "input-gaming-symbolic",                     "audifonospro.ui.gtk.pages.controls_page",   "ControlsPage"),
-            ("eq",     "EQ",           "multimedia-volume-control-symbolic",         "audifonospro.ui.gtk.pages.eq_page",         "EQPage"),
-            ("anc",    "ANC",          "microphone-sensitivity-high-symbolic",       "audifonospro.ui.gtk.pages.anc_page",        "ANCPage"),
-            ("trans",  "Traductor",    "microphone-sensitivity-muted-symbolic",      "audifonospro.ui.gtk.pages.translator_page", "TranslatorPage"),
-            ("stacks", "Stacks",       "view-app-grid-symbolic",                    "audifonospro.ui.gtk.pages.stacks_page",     "StacksPage"),
-            ("cfg",    "Ajustes",      "preferences-system-symbolic",               "audifonospro.ui.gtk.pages.settings_page",   "SettingsPage"),
+            ("audio",   "Audio",      "audio-headphones-symbolic",     "audifonospro.ui.gtk.pages.devices_page",    "DevicesPage"),
+            ("trans",   "Traductor",  "microphone-symbolic",           "audifonospro.ui.gtk.pages.translator_page", "TranslatorPage"),
+            ("cinema",  "Cinema",     "video-display-symbolic",        "audifonospro.ui.gtk.pages.cinema_page",     "CinemaPage"),
+            ("cfg",     "Ajustes",    "preferences-system-symbolic",   "audifonospro.ui.gtk.pages.settings_page",   "SettingsPage"),
         ]
 
         for page_id, title, icon, module_path, class_name in pages:

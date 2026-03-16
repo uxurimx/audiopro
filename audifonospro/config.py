@@ -40,6 +40,7 @@ class AudioConfig(BaseModel):
 
 
 class BluetoothConfig(BaseModel):
+    primary_mac: str = ""            # MAC del audífono principal (ej. B4:84:D5:98:E8:31)
     auto_reconnect: bool = True
     preferred_codec: str = "aac"
     mic_profile: str = "headset-head-unit"

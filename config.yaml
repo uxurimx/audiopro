@@ -12,6 +12,7 @@ audio:
   channels: 1
 
 bluetooth:
+  primary_mac: "B4:84:D5:98:E8:31" # JBL Vive Buds — deja vacío si no tienes audífonos BT
   auto_reconnect: true
   preferred_codec: "aac"           # sbc | aac | aptx | ldac
   mic_profile: "headset-head-unit" # HFP con mSBC codec (16kHz)

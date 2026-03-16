@@ -186,5 +186,7 @@ class StacksPage(Adw.PreferencesPage):
         self._active_row.set_subtitle(stack_info["description"])
         self._active_row.set_icon_name(stack_info["icon"])
 
-        # TODO Fase 4: aplicar el stack al pipeline en ejecución
-        print(f"[stacks] Stack seleccionado: {stack_id}")
+        # Aplicar stack al pipeline si está corriendo
+        from audifonospro.stacks.manager import get_stack_manager
+        from audifonospro.pipeline.coordinator import get_pipeline
+        get_stack_manager().activate(stack_id, get_pipeline())

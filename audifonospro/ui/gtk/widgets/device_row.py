@@ -39,7 +39,6 @@ class DeviceRow(Adw.ExpanderRow):
         self._battery_label: Gtk.Label | None = None
         self._rssi_label: Gtk.Label | None = None
         self._pw_row: Adw.ActionRow | None = None
-        self._hfp_switch: Gtk.Switch | None = None
         self._build_row()
 
     # ── Construcción inicial ──────────────────────────────────────────────
@@ -108,19 +107,6 @@ class DeviceRow(Adw.ExpanderRow):
         rssi_row.add_suffix(self._rssi_label)
         self.add_row(rssi_row)
 
-        # ── Switch HFP (micrófono) ──
-        hfp_row = Adw.ActionRow()
-        hfp_row.set_title("Micrófono (modo HFP)")
-        hfp_row.set_subtitle("Activa el mic del audífono · reduce calidad de audio")
-        self._hfp_switch = Gtk.Switch()
-        self._hfp_switch.set_valign(Gtk.Align.CENTER)
-        self._hfp_switch.set_active(
-            d.bt_profile is not None and "headset" in d.bt_profile
-        )
-        self._hfp_switch.connect("state-set", self._on_hfp_toggled)
-        hfp_row.add_suffix(self._hfp_switch)
-        hfp_row.set_activatable_widget(self._hfp_switch)
-        self.add_row(hfp_row)
 
     def _build_pw_row(self) -> None:
         self._pw_row = Adw.ActionRow()
@@ -180,12 +166,6 @@ class DeviceRow(Adw.ExpanderRow):
             )
         if self._pw_row:
             self._update_pw_row(device)
-        if self._hfp_switch:
-            is_hfp = device.bt_profile is not None and "headset" in device.bt_profile
-            # Bloquear señal para evitar loop infinito
-            self._hfp_switch.handler_block_by_func(self._on_hfp_toggled)
-            self._hfp_switch.set_active(is_hfp)
-            self._hfp_switch.handler_unblock_by_func(self._on_hfp_toggled)
 
     def _update_battery_bar(self, percent: int | None) -> None:
         if self._battery_bar is None:
@@ -222,16 +202,6 @@ class DeviceRow(Adw.ExpanderRow):
             daemon=True,
         ).start()
 
-    def _on_hfp_toggled(self, switch: Gtk.Switch, state: bool) -> bool:
-        if self._device.mac_address is None:
-            return False
-        profile = "headset-head-unit" if state else "a2dp-sink"
-        import threading
-        threading.Thread(
-            target=self._apply_profile, args=(self._device.mac_address, profile),
-            daemon=True,
-        ).start()
-        return False  # Permitir que el switch cambie visualmente
 
     def _on_set_output(self, _btn: Gtk.Button) -> None:
         import threading
