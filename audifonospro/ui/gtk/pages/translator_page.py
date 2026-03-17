@@ -26,6 +26,28 @@ from gi.repository import Adw, Gtk, GLib
 from audifonospro.config import Settings
 
 
+def _list_output_sinks() -> list[tuple[str, str | None]]:
+    """Devuelve [(label, sink_name|None), ...] para dispositivos de salida de audio."""
+    sinks: list[tuple[str, str | None]] = [("Auto (predeterminado del sistema)", None)]
+    try:
+        from audifonospro.audio.routing import list_sinks
+        for s in list_sinks():
+            name = s["name"]
+            desc = (s.get("description") or "").strip() or name
+            if "bluez_output" in name:
+                label = f"BT — {desc}"
+            elif "alsa_output" in name and "analog" in name:
+                label = f"Altavoces — {desc}"
+            elif "hdmi" in name.lower():
+                label = f"HDMI — {desc}"
+            else:
+                label = desc[:52]
+            sinks.append((label, name))
+    except Exception:
+        pass
+    return sinks
+
+
 def _list_mic_sources() -> list[tuple[str, str | None]]:
     """Devuelve [(label, pa_source_name|None), ...] incluyendo monitores de sistema."""
     sources: list[tuple[str, str | None]] = [("Auto (predeterminado del sistema)", None)]
@@ -95,6 +117,8 @@ class TranslatorPage(Adw.PreferencesPage):
         self._mic_timer_id = 0
         self._anc_started_here = False
         self._mic_sources = _list_mic_sources()
+        self._out_sinks = _list_output_sinks()
+        self._subtitle_win: object | None = None   # SubtitleWindow, lazy-imported
 
         self.set_title("Traductor")
         self.set_icon_name("microphone-symbolic")
@@ -124,6 +148,27 @@ class TranslatorPage(Adw.PreferencesPage):
         mic_src_row.add_suffix(mic_box)
         mic_src_row.set_activatable_widget(self._mic_dd)
         config_group.add(mic_src_row)
+
+        # Salida de audio (dispositivo donde se reproduce la traducción)
+        out_row = Adw.ActionRow()
+        out_row.set_title("Salida de audio")
+        out_row.set_subtitle("Dispositivo donde suena la voz traducida")
+        out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        out_box.set_valign(Gtk.Align.CENTER)
+        out_labels = [label for label, _ in self._out_sinks]
+        out_model = Gtk.StringList.new(out_labels)
+        self._out_dd = Gtk.DropDown(model=out_model)
+        self._out_dd.set_valign(Gtk.Align.CENTER)
+        out_box.append(self._out_dd)
+        out_refresh_btn = Gtk.Button()
+        out_refresh_btn.set_icon_name("view-refresh-symbolic")
+        out_refresh_btn.set_tooltip_text("Actualizar lista de salidas")
+        out_refresh_btn.set_valign(Gtk.Align.CENTER)
+        out_refresh_btn.connect("clicked", self._on_refresh_outputs)
+        out_box.append(out_refresh_btn)
+        out_row.add_suffix(out_box)
+        out_row.set_activatable_widget(self._out_dd)
+        config_group.add(out_row)
 
         # HFP automático (solo visible si hay MAC configurada)
         if self.settings.bluetooth.primary_mac:
@@ -165,10 +210,21 @@ class TranslatorPage(Adw.PreferencesPage):
         quality_row.set_activatable_widget(self._quality_dd)
         config_group.add(quality_row)
 
+        # Traducir (on/off)
+        translate_row = Adw.ActionRow()
+        translate_row.set_title("Traducir")
+        translate_row.set_subtitle("ON: traduce al idioma destino  •  OFF: solo transcribe (más rápido)")
+        self._translate_switch = Gtk.Switch()
+        self._translate_switch.set_valign(Gtk.Align.CENTER)
+        self._translate_switch.set_active(True)
+        translate_row.add_suffix(self._translate_switch)
+        translate_row.set_activatable_widget(self._translate_switch)
+        config_group.add(translate_row)
+
         # Solo texto (sin TTS)
         text_only_row = Adw.ActionRow()
         text_only_row.set_title("Solo texto — sin voz")
-        text_only_row.set_subtitle("Muestra la traducción en pantalla sin sintetizar audio")
+        text_only_row.set_subtitle("Muestra el resultado en pantalla sin sintetizar audio")
         self._text_only_switch = Gtk.Switch()
         self._text_only_switch.set_valign(Gtk.Align.CENTER)
         self._text_only_switch.set_active(False)
@@ -213,6 +269,17 @@ class TranslatorPage(Adw.PreferencesPage):
         self._toggle_btn.connect("clicked", self._on_toggle_pipeline)
         ctrl_row.add_suffix(self._toggle_btn)
         pipeline_group.add(ctrl_row)
+
+        # Ventana de subtítulos flotante
+        sub_row = Adw.ActionRow()
+        sub_row.set_title("Ventana de subtítulos")
+        sub_row.set_subtitle("Texto grande flotante — ideal para ver un video")
+        self._sub_btn = Gtk.Button(label="Abrir subtítulos")
+        self._sub_btn.set_valign(Gtk.Align.CENTER)
+        self._sub_btn.connect("clicked", self._on_toggle_subtitle_window)
+        sub_row.add_suffix(self._sub_btn)
+        sub_row.set_activatable_widget(self._sub_btn)
+        pipeline_group.add(sub_row)
 
         # Nivel de micrófono en vivo
         self._mic_row = Adw.ActionRow()
@@ -265,22 +332,68 @@ class TranslatorPage(Adw.PreferencesPage):
         scroll.set_vexpand(False)
         history_row.set_child(scroll)
 
-        # Botón limpiar historial
-        clear_btn = Gtk.Button()
-        clear_btn.set_icon_name("edit-clear-all-symbolic")
-        clear_btn.set_tooltip_text("Limpiar historial")
-        clear_btn.set_valign(Gtk.Align.START)
-        clear_btn.set_margin_top(8)
-        clear_btn.connect("clicked", self._on_clear_history)
         text_group.add(history_row)
 
-        clear_row = Adw.ActionRow()
-        clear_row.set_child(clear_btn)
-        text_group.add(clear_row)
+        # Botonera: limpiar + cargar historial DB
+        btn_row = Adw.ActionRow()
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_box.set_margin_top(6)
+        btn_box.set_margin_bottom(6)
+
+        clear_btn = Gtk.Button(label="Limpiar")
+        clear_btn.set_icon_name("edit-clear-all-symbolic")
+        clear_btn.set_tooltip_text("Limpiar historial de esta sesión")
+        clear_btn.connect("clicked", self._on_clear_history)
+        btn_box.append(clear_btn)
+
+        load_btn = Gtk.Button(label="Cargar historial")
+        load_btn.set_icon_name("document-open-recent-symbolic")
+        load_btn.set_tooltip_text("Cargar las últimas 50 frases de la base de datos")
+        load_btn.connect("clicked", self._on_load_history)
+        btn_box.append(load_btn)
+
+        btn_row.set_child(btn_box)
+        text_group.add(btn_row)
 
         self._scroll_window = scroll
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _on_refresh_outputs(self, _btn: Gtk.Button | None = None) -> None:
+        old_idx = self._out_dd.get_selected()
+        old_name = self._out_sinks[old_idx][1] if old_idx < len(self._out_sinks) else None
+        self._out_sinks = _list_output_sinks()
+        self._out_dd.set_model(Gtk.StringList.new([label for label, _ in self._out_sinks]))
+        if old_name:
+            for i, (_, name) in enumerate(self._out_sinks):
+                if name == old_name:
+                    self._out_dd.set_selected(i)
+                    return
+        self._out_dd.set_selected(0)
+
+    def _on_toggle_subtitle_window(self, _btn: Gtk.Button) -> None:
+        if self._subtitle_win is not None and self._subtitle_win.get_visible():
+            self._subtitle_win.set_visible(False)
+            self._sub_btn.set_label("Abrir subtítulos")
+            return
+
+        if self._subtitle_win is None:
+            from audifonospro.ui.gtk.subtitle_window import SubtitleWindow
+            try:
+                app = self.get_root().get_application()
+            except Exception:
+                app = None
+            self._subtitle_win = SubtitleWindow(application=app)
+            self._subtitle_win.connect("close-request", self._on_subtitle_closed)
+
+        self._subtitle_win.present()
+        self._sub_btn.set_label("Cerrar subtítulos")
+        if self._pipeline_running:
+            self._subtitle_win.set_pipeline_active(True)
+
+    def _on_subtitle_closed(self, _win: object) -> bool:
+        self._sub_btn.set_label("Abrir subtítulos")
+        return False   # allow close
 
     def _on_refresh_mics(self, _btn: Gtk.Button | None = None) -> None:
         # Recordar la fuente actualmente seleccionada por nombre (no índice)
@@ -319,6 +432,9 @@ class TranslatorPage(Adw.PreferencesPage):
             tts_p = "none"
         mic_idx = self._mic_dd.get_selected()
         _, mic_source = self._mic_sources[mic_idx] if mic_idx < len(self._mic_sources) else (None, None)
+        out_idx = self._out_dd.get_selected()
+        _, out_sink = self._out_sinks[out_idx] if out_idx < len(self._out_sinks) else (None, None)
+        translate = self._translate_switch.get_active()
         return {
             "src_lang":       src_lang,
             "dst_lang":       dst_name,   # nombre completo para el prompt de traducción
@@ -327,6 +443,8 @@ class TranslatorPage(Adw.PreferencesPage):
             "trans_model":    trans_m,
             "tts_provider":   tts_p,
             "mic_source":     mic_source,
+            "output_device":  out_sink,
+            "translate":      translate,
         }
 
     # ── Nivel de mic ──────────────────────────────────────────────────────
@@ -449,8 +567,12 @@ class TranslatorPage(Adw.PreferencesPage):
             trans_model    = cfg["trans_model"],
             tts_provider   = cfg["tts_provider"],
             mic_source     = cfg["mic_source"],
+            output_device  = cfg["output_device"],
+            translate      = cfg["translate"],
         )
         self._start_mic_monitor()
+        if self._subtitle_win is not None:
+            self._subtitle_win.set_pipeline_active(True)
         return False
 
     def _stop_pipeline(self) -> None:
@@ -479,6 +601,8 @@ class TranslatorPage(Adw.PreferencesPage):
         self._trans_row.set_subtitle("Inactivo")
         self._tts_row.set_subtitle("Inactivo")
         self._latency_row.set_subtitle("─")
+        if self._subtitle_win is not None:
+            self._subtitle_win.set_pipeline_active(False)
 
     @staticmethod
     def _restore_a2dp(mac: str) -> None:
@@ -514,20 +638,57 @@ class TranslatorPage(Adw.PreferencesPage):
 
     def _on_transcript(self, original: str, translated: str) -> None:
         GLib.idle_add(self._append_transcript, original, translated)
+        if self._subtitle_win is not None:
+            self._subtitle_win.update(original, translated)
 
     def _append_transcript(self, original: str, translated: str) -> bool:
         import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         buf = self._transcript_buf
-        # Quitar el texto de placeholder si es el primero
-        if buf.get_char_count() and buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).startswith("Aquí aparecerá"):
+        if buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).startswith("Aquí aparecerá"):
             buf.set_text("")
-        end = buf.get_end_iter()
-        buf.insert(end, f"[{ts}]  {original}\n→  {translated}\n\n")
-        # Auto-scroll al final
-        end = buf.get_end_iter()
-        self._transcript_view.scroll_to_iter(end, 0.0, False, 0.0, 1.0)
+        if original == translated:
+            entry = f"[{ts}]  {original}\n\n"
+        else:
+            entry = f"[{ts}]  {original}\n→  {translated}\n\n"
+        buf.insert(buf.get_end_iter(), entry)
+        self._transcript_view.scroll_to_iter(buf.get_end_iter(), 0.0, False, 0.0, 1.0)
         return False
 
     def _on_clear_history(self, _btn: Gtk.Button) -> None:
         self._transcript_buf.set_text("Aquí aparecerá el historial de traducciones…\n")
+
+    def _on_load_history(self, _btn: Gtk.Button) -> None:
+        """Carga las últimas 50 frases de la DB en el historial."""
+        threading.Thread(target=self._load_history_bg, daemon=True).start()
+
+    def _load_history_bg(self) -> None:
+        try:
+            from audifonospro.db.phrases import get_recent_phrases
+            rows = get_recent_phrases(50)
+        except Exception as exc:
+            GLib.idle_add(self._append_raw, f"[Error al cargar historial: {exc}]\n")
+            return
+        if not rows:
+            GLib.idle_add(self._append_raw, "[El historial está vacío]\n")
+            return
+        # Ordenar cronológico (vienen DESC de la DB)
+        rows = list(reversed(rows))
+        lines = ["─── Historial de la base de datos ───\n"]
+        for r in rows:
+            ts = r["timestamp"][:19].replace("T", " ")
+            orig = r["original"]
+            trans = r["translated"]
+            if orig == trans:
+                lines.append(f"[{ts}]  {orig}\n\n")
+            else:
+                lines.append(f"[{ts}]  {orig}\n→  {trans}\n\n")
+        GLib.idle_add(self._append_raw, "".join(lines))
+
+    def _append_raw(self, text: str) -> bool:
+        buf = self._transcript_buf
+        if buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).startswith("Aquí aparecerá"):
+            buf.set_text("")
+        buf.insert(buf.get_end_iter(), text)
+        self._transcript_view.scroll_to_iter(buf.get_end_iter(), 0.0, False, 0.0, 1.0)
+        return False

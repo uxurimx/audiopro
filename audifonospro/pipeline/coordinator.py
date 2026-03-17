@@ -84,6 +84,7 @@ class TranslationPipeline:
         self._tts_voice:     str = "es-MX-JorgeNeural"
         self._output_device: str | None = None
         self._mic_source:    str | None = None  # PulseAudio/PipeWire source name
+        self._translate_enabled: bool = True
 
     # ── API pública ───────────────────────────────────────────────────────
 
@@ -102,6 +103,7 @@ class TranslationPipeline:
         tts_voice: str | None = None,
         output_device: str | None = None,
         mic_source: str | None = None,
+        translate: bool = True,
     ) -> None:
         with self._lock:
             if self._running:
@@ -120,8 +122,9 @@ class TranslationPipeline:
             self._trans_model    = trans_model
             self._tts_provider   = tts_provider
             self._tts_voice      = tts_voice or dflt_voice
-            self._output_device  = output_device
-            self._mic_source     = mic_source
+            self._output_device      = output_device
+            self._mic_source         = mic_source
+            self._translate_enabled  = translate
 
             # Vaciar colas
             for q in (self._q_segments, self._q_texts, self._q_translated):
@@ -360,44 +363,51 @@ class TranslationPipeline:
             else:
                 original_text, stt_ms = item, 0
 
-            self._update("trans", "Traduciendo…")
             t0 = time.monotonic()
             try:
-                translated = translate(
-                    original_text,
-                    target_language=self._dst_name,
-                    provider=self._trans_provider,
-                    model=self._trans_model,
-                    settings=s,
-                )
-                elapsed = int((time.monotonic() - t0) * 1000)
-                if translated.strip():
+                if self._translate_enabled:
+                    self._update("trans", "Traduciendo…")
+                    translated = translate(
+                        original_text,
+                        target_language=self._dst_name,
+                        provider=self._trans_provider,
+                        model=self._trans_model,
+                        settings=s,
+                    )
+                    elapsed = int((time.monotonic() - t0) * 1000)
+                    if not translated.strip():
+                        self._update("trans", "En espera")
+                        continue
                     self._update("trans", f"✓ {translated[:50]}  ({elapsed} ms)")
-                    # Guardar en DB
+                else:
+                    # Modo transcripción: pasar el texto original sin traducir
+                    translated = original_text
+                    elapsed = 0
+                    self._update("trans", "Solo transcripción")
+
+                # Guardar en DB
+                try:
+                    from audifonospro.db.phrases import save_phrase
+                    save_phrase(
+                        session_id  = self._session_id,
+                        original    = original_text,
+                        translated  = translated.strip(),
+                        src_lang    = self._src_code,
+                        dst_lang    = self._dst_code if self._translate_enabled else self._src_code,
+                        stt_ms      = stt_ms,
+                        trans_ms    = elapsed,
+                    )
+                except Exception:
+                    pass
+                if self.on_transcript:
                     try:
-                        from audifonospro.db.phrases import save_phrase
-                        save_phrase(
-                            session_id  = self._session_id,
-                            original    = original_text,
-                            translated  = translated.strip(),
-                            src_lang    = self._src_code,
-                            dst_lang    = self._dst_code,
-                            stt_ms      = stt_ms,
-                            trans_ms    = elapsed,
-                        )
+                        self.on_transcript(original_text, translated)
                     except Exception:
                         pass
-                    if self.on_transcript:
-                        try:
-                            self.on_transcript(original_text, translated)
-                        except Exception:
-                            pass
-                    try:
-                        self._q_translated.put(translated.strip(), timeout=5.0)
-                    except queue.Full:
-                        pass
-                else:
-                    self._update("trans", "En espera")
+                try:
+                    self._q_translated.put(translated.strip(), timeout=5.0)
+                except queue.Full:
+                    pass
             except Exception as exc:
                 self._update("trans", f"Error: {str(exc)[:60]}")
 
