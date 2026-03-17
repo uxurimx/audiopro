@@ -27,7 +27,7 @@ from audifonospro.config import Settings
 
 
 def _list_mic_sources() -> list[tuple[str, str | None]]:
-    """Devuelve [(label, pa_source_name|None), ...] filtrando monitores."""
+    """Devuelve [(label, pa_source_name|None), ...] incluyendo monitores de sistema."""
     sources: list[tuple[str, str | None]] = [("Auto (predeterminado del sistema)", None)]
     try:
         out = subprocess.run(
@@ -39,19 +39,25 @@ def _list_mic_sources() -> list[tuple[str, str | None]]:
             if len(parts) < 2:
                 continue
             name = parts[1].strip()
-            if not name or "monitor" in name:
+            if not name:
                 continue
-            if "alsa_input" in name:
-                label = "Laptop — mic integrado"
+            if "monitor" in name:
+                # Fuentes monitor: capturan el audio que sale por los altavoces/BT
+                if "bluez_output" in name:
+                    label = "Sistema — audio de audífonos BT (video/navegador)"
+                else:
+                    label = "Sistema — audio del ordenador (video/navegador)"
+                sources.append((label, name))
+            elif "alsa_input" in name:
+                sources.append(("Laptop — mic integrado", name))
             elif "bluez_input" in name:
-                label = "JBL HFP — mic de audífonos"
+                sources.append(("JBL HFP — mic de audífonos", name))
             elif "easyeffects_source" in name:
-                label = "EasyEffects (procesado)"
+                sources.append(("EasyEffects (procesado)", name))
             elif "audifonospro_anc" in name:
-                label = "ANC Mic (audifonospro)"
+                sources.append(("ANC Mic (audifonospro)", name))
             else:
-                label = name[:50]
-            sources.append((label, name))
+                sources.append((name[:50], name))
     except Exception:
         pass
     return sources
@@ -159,6 +165,17 @@ class TranslatorPage(Adw.PreferencesPage):
         quality_row.set_activatable_widget(self._quality_dd)
         config_group.add(quality_row)
 
+        # Solo texto (sin TTS)
+        text_only_row = Adw.ActionRow()
+        text_only_row.set_title("Solo texto — sin voz")
+        text_only_row.set_subtitle("Muestra la traducción en pantalla sin sintetizar audio")
+        self._text_only_switch = Gtk.Switch()
+        self._text_only_switch.set_valign(Gtk.Align.CENTER)
+        self._text_only_switch.set_active(False)
+        text_only_row.add_suffix(self._text_only_switch)
+        text_only_row.set_activatable_widget(self._text_only_switch)
+        config_group.add(text_only_row)
+
         # Idiomas
         src_row = Adw.ActionRow()
         src_row.set_title("Idioma de origen")
@@ -223,20 +240,45 @@ class TranslatorPage(Adw.PreferencesPage):
         for row in [self._stt_row, self._trans_row, self._tts_row, self._latency_row]:
             status_group.add(row)
 
-        # ── Última transcripción ──────────────────────────────────────────
+        # ── Historial de transcripciones ──────────────────────────────────
         text_group = Adw.PreferencesGroup()
-        text_group.set_title("Última transcripción")
+        text_group.set_title("Historial de transcripciones")
         self.add(text_group)
 
-        text_row = Adw.ActionRow()
-        self._transcript_label = Gtk.Label(label="Aquí aparecerá lo que digas y su traducción")
-        self._transcript_label.set_wrap(True)
-        self._transcript_label.set_xalign(0)
-        self._transcript_label.add_css_class("dim-label")
-        self._transcript_label.set_margin_top(8)
-        self._transcript_label.set_margin_bottom(8)
-        text_row.set_child(self._transcript_label)
-        text_group.add(text_row)
+        history_row = Adw.ActionRow()
+        self._transcript_buf = Gtk.TextBuffer()
+        self._transcript_buf.set_text("Aquí aparecerá el historial de traducciones…\n")
+        self._transcript_view = Gtk.TextView(buffer=self._transcript_buf)
+        self._transcript_view.set_editable(False)
+        self._transcript_view.set_cursor_visible(False)
+        self._transcript_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._transcript_view.set_monospace(False)
+        self._transcript_view.set_margin_top(8)
+        self._transcript_view.set_margin_bottom(8)
+        self._transcript_view.set_margin_start(8)
+        self._transcript_view.set_margin_end(8)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_child(self._transcript_view)
+        scroll.set_size_request(-1, 240)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(False)
+        history_row.set_child(scroll)
+
+        # Botón limpiar historial
+        clear_btn = Gtk.Button()
+        clear_btn.set_icon_name("edit-clear-all-symbolic")
+        clear_btn.set_tooltip_text("Limpiar historial")
+        clear_btn.set_valign(Gtk.Align.START)
+        clear_btn.set_margin_top(8)
+        clear_btn.connect("clicked", self._on_clear_history)
+        text_group.add(history_row)
+
+        clear_row = Adw.ActionRow()
+        clear_row.set_child(clear_btn)
+        text_group.add(clear_row)
+
+        self._scroll_window = scroll
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -270,9 +312,11 @@ class TranslatorPage(Adw.PreferencesPage):
         src_name = _LANGS_SRC[self._src_dd.get_selected()]
         dst_name = _LANGS_DST[self._dst_dd.get_selected()]
         src_lang = _LANG_CODE.get(src_name, "")   # "" = auto-detect en Whisper
-        dst_lang = _LANG_CODE.get(dst_name, dst_name)
         qi = self._quality_dd.get_selected()
         _, stt_p, trans_p, trans_m, tts_p = _QUALITY_OPTIONS[qi]
+        # "Solo texto" override: no sintetizar voz
+        if self._text_only_switch.get_active():
+            tts_p = "none"
         mic_idx = self._mic_dd.get_selected()
         _, mic_source = self._mic_sources[mic_idx] if mic_idx < len(self._mic_sources) else (None, None)
         return {
@@ -469,7 +513,21 @@ class TranslatorPage(Adw.PreferencesPage):
         return False
 
     def _on_transcript(self, original: str, translated: str) -> None:
-        GLib.idle_add(
-            self._transcript_label.set_text,
-            f"{original}\n\n{translated}",
-        )
+        GLib.idle_add(self._append_transcript, original, translated)
+
+    def _append_transcript(self, original: str, translated: str) -> bool:
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        buf = self._transcript_buf
+        # Quitar el texto de placeholder si es el primero
+        if buf.get_char_count() and buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).startswith("Aquí aparecerá"):
+            buf.set_text("")
+        end = buf.get_end_iter()
+        buf.insert(end, f"[{ts}]  {original}\n→  {translated}\n\n")
+        # Auto-scroll al final
+        end = buf.get_end_iter()
+        self._transcript_view.scroll_to_iter(end, 0.0, False, 0.0, 1.0)
+        return False
+
+    def _on_clear_history(self, _btn: Gtk.Button) -> None:
+        self._transcript_buf.set_text("Aquí aparecerá el historial de traducciones…\n")

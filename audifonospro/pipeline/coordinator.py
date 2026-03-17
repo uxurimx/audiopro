@@ -425,6 +425,11 @@ class TranslationPipeline:
             if item is _SENTINEL or not self._running:
                 break
 
+            # "none" = solo texto, sin síntesis ni reproducción
+            if self._tts_provider == "none":
+                self._update("tts", "Solo texto — sin voz")
+                continue
+
             self._update("tts", "Sintetizando…")
             t0 = time.monotonic()
             audio_path: str | None = None
