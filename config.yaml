@@ -40,7 +40,7 @@ stt:
   provider: "whisper_cpp"          # whisper_cpp | openai
   model: "small"                   # tiny | base | small | medium
   language: "es"                   # hint de idioma fuente
-  whisper_cpp_binary: "~/whisper.cpp/main"
+  whisper_cpp_binary: "~/whisper.cpp/build/bin/whisper-cli"
   whisper_cpp_model: "~/whisper.cpp/models/ggml-small.bin"
 
 translation:

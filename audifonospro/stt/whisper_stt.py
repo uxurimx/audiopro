@@ -98,16 +98,18 @@ def _transcribe_whisper_cpp(wav_bytes: bytes, language: str, settings: object) -
         f.write(wav_bytes)
         wav_path = f.name
 
+    # "-l auto" activa auto-detección; "" o None fuerza el default (inglés)
+    lang_arg = language if language else "auto"
+
     try:
         result = subprocess.run(
             [
                 str(binary),
                 "-m", str(model),
                 "-f", wav_path,
-                "-l", language,
+                "-l", lang_arg,
                 "--no-timestamps",
-                "--print-progress",
-                "-np",              # no progress bar en stderr
+                "-np",              # --no-prints: solo stdout con el texto
                 "-t", "4",          # 4 threads CPU
             ],
             capture_output=True,

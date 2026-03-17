@@ -77,7 +77,7 @@ _LANG_CODE = {
 _QUALITY_OPTIONS = [
     ("Local — gratis, ~10s/frase",         "whisper_cpp", "ollama",  "llama3.2:3b",  "piper"),
     ("Equilibrado — ~$0.004/sesión, ~2s",  "whisper_cpp", "openai",  "gpt-4o-mini",  "edge_tts"),
-    ("Alta calidad — ~$0.08/sesión, ~1s",  "openai",      "openai",  "gpt-4o",       "openai_tts"),
+    ("Alta calidad — ~$0.08/sesión, ~1s",  "openai",      "openai",  "gpt-4o",       "openai"),
 ]
 
 
