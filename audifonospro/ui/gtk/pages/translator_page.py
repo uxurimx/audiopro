@@ -145,9 +145,20 @@ class TranslatorPage(Adw.PreferencesPage):
         refresh_btn.set_valign(Gtk.Align.CENTER)
         refresh_btn.connect("clicked", self._on_refresh_mics)
         mic_box.append(refresh_btn)
+        self._mic_dd.connect("notify::selected", self._on_mic_changed)
         mic_src_row.add_suffix(mic_box)
         mic_src_row.set_activatable_widget(self._mic_dd)
         config_group.add(mic_src_row)
+
+        # Aviso HFP (visible solo cuando se elige mic BT sin HFP activo)
+        self._hfp_hint_row = Adw.ActionRow()
+        self._hfp_hint_row.set_title("⚠ Mic BT requiere perfil HFP")
+        self._hfp_hint_row.set_subtitle(
+            "El mic de los audífonos solo funciona en modo Manos Libres. "
+            "Activa el toggle \"Activar mic BT al iniciar\" o el pipeline no capturará audio."
+        )
+        self._hfp_hint_row.set_visible(False)
+        config_group.add(self._hfp_hint_row)
 
         # Salida de audio (dispositivo donde se reproduce la traducción)
         out_row = Adw.ActionRow()
@@ -358,6 +369,14 @@ class TranslatorPage(Adw.PreferencesPage):
         self._scroll_window = scroll
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _on_mic_changed(self, dd: Gtk.DropDown, _param: object) -> None:
+        """Muestra advertencia si se selecciona mic BT sin el toggle HFP activo."""
+        idx = dd.get_selected()
+        _, name = self._mic_sources[idx] if idx < len(self._mic_sources) else (None, None)
+        is_bt_input = bool(name and "bluez_input" in name)
+        hfp_on = self._hfp_switch is not None and self._hfp_switch.get_active()
+        self._hfp_hint_row.set_visible(is_bt_input and not hfp_on)
 
     def _on_refresh_outputs(self, _btn: Gtk.Button | None = None) -> None:
         old_idx = self._out_dd.get_selected()
