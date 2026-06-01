@@ -71,8 +71,8 @@ class STTConfig(BaseModel):
     provider: str = "whisper_cpp"
     model: str = "small"
     language: str = "es"
-    whisper_cpp_binary: str = "~/whisper.cpp/main"
-    whisper_cpp_model: str = "~/whisper.cpp/models/ggml-small.bin"
+    whisper_cpp_binary: str = "~/tools/whisper.cpp/whisper-cli.sh"
+    whisper_cpp_model: str = "~/tools/whisper.cpp/models/ggml-small.bin"
 
 
 class TranslationConfig(BaseModel):
@@ -90,8 +90,8 @@ class TranslationConfig(BaseModel):
 class TTSConfig(BaseModel):
     provider: str = "edge_tts"
     edge_tts_voice: str = "es-MX-JorgeNeural"
-    piper_binary: str = "~/piper/piper"
-    piper_model: str = "~/piper/es_MX-claude-medium.onnx"
+    piper_binary: str = "~/tools/piper/piper.sh"
+    piper_model: str = "~/tools/piper/models/es_MX-claude-high.onnx"
     openai_voice: str = "nova"
     openai_model: str = "tts-1"
 

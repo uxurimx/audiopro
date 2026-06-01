@@ -34,21 +34,28 @@ translate:
 
 install-whisper:
 	@echo "==> Clonando whisper.cpp..."
-	git clone https://github.com/ggerganov/whisper.cpp ~/whisper.cpp 2>/dev/null || \
-		git -C ~/whisper.cpp pull
+	mkdir -p ~/tools
+	git clone https://github.com/ggerganov/whisper.cpp ~/tools/whisper.cpp 2>/dev/null || \
+		git -C ~/tools/whisper.cpp pull
 	@echo "==> Compilando (AVX2 activado automáticamente en tu i7)..."
-	$(MAKE) -C ~/whisper.cpp -j$$(nproc)
+	$(MAKE) -C ~/tools/whisper.cpp -j$$(nproc)
 	@echo "==> Descargando modelo small (~150MB)..."
-	bash ~/whisper.cpp/models/download-ggml-model.sh small
-	@echo "==> whisper.cpp listo: ~/whisper.cpp/main"
+	bash ~/tools/whisper.cpp/models/download-ggml-model.sh small
+	@echo "==> whisper.cpp listo: ~/tools/whisper.cpp/build/bin/whisper-cli"
 
 install-piper:
 	@echo "==> Instalando piper TTS..."
-	mkdir -p ~/piper
+	mkdir -p ~/tools/piper/models
 	wget -qO /tmp/piper.tar.gz \
 		https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
-	tar -xzf /tmp/piper.tar.gz -C ~/piper --strip-components=1
-	@echo "==> piper listo: ~/piper/piper"
+	tar -xzf /tmp/piper.tar.gz -C ~/tools/piper
+	@echo "#!/bin/bash" > ~/tools/piper/piper.sh
+	@echo 'REAL="$$(readlink -f "$${BASH_SOURCE[0]}")"' >> ~/tools/piper/piper.sh
+	@echo 'PIPER_DIR="$$(dirname "$$REAL")/piper"' >> ~/tools/piper/piper.sh
+	@echo 'exec env LD_LIBRARY_PATH="$$PIPER_DIR:$$LD_LIBRARY_PATH" "$$PIPER_DIR/piper" "$$@"' >> ~/tools/piper/piper.sh
+	chmod +x ~/tools/piper/piper.sh
+	ln -sf ~/tools/piper/piper.sh ~/.local/bin/piper
+	@echo "==> piper listo: ~/tools/piper/piper.sh"
 	@echo "==> Descarga una voz desde: https://huggingface.co/rhasspy/piper-voices"
 
 # ── Limpieza ───────────────────────────────────────────────────────────────────

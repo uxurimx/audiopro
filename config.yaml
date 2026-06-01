@@ -40,8 +40,8 @@ stt:
   provider: "whisper_cpp"          # whisper_cpp | openai
   model: "small"                   # tiny | base | small | medium
   language: "es"                   # hint de idioma fuente
-  whisper_cpp_binary: "~/whisper.cpp/build/bin/whisper-cli"
-  whisper_cpp_model: "~/whisper.cpp/models/ggml-small.bin"
+  whisper_cpp_binary: "~/tools/whisper.cpp/whisper-cli.sh"
+  whisper_cpp_model: "~/tools/whisper.cpp/models/ggml-small.bin"
 
 translation:
   provider: "openai"               # openai | ollama
@@ -56,8 +56,8 @@ translation:
 tts:
   provider: "edge_tts"             # edge_tts | piper | openai
   edge_tts_voice: "es-MX-JorgeNeural"
-  piper_binary: "~/piper/piper"
-  piper_model: "~/piper/es_MX-claude-medium.onnx"
+  piper_binary: "~/tools/piper/piper.sh"
+  piper_model: "~/tools/piper/models/es_MX-claude-high.onnx"
   openai_voice: "nova"             # alloy | echo | fable | onyx | nova | shimmer
   openai_model: "tts-1"            # tts-1 | tts-1-hd
 
